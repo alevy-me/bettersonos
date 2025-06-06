@@ -23,7 +23,7 @@ I created BetterSonos for two reasons:
 * **Dark Mode Support:** Fully supports light and dark mode for a great user experience.
 
 ## Screenshots
-![Light Mode](.assets/light.png) | ![Dark Mode](.assets/dark.png)
+<img src=".assets/light.png" alt="Light Mode" width="400"> | <img src=".assets/dark.png" alt="Dark Mode" width="400">
 
 ## Requirement: The Backend API
 

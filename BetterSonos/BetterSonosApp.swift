@@ -1508,23 +1508,26 @@ class SonosViewModel: NSObject, ObservableObject {
     }
     
     func sendStreamURL(to room: String, station: Station, completion: (() -> Void)? = nil) {
-        let safeRoom = room.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? room
-        let path: String
-        
-        if station.isFavorite {
-            let encoded = station.url.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? station.url
-            path = "\(baseURL)/\(safeRoom)/favorite/\(encoded)"
-        } else if station.isLineIn {
-            path = "\(baseURL)/\(safeRoom)/setavtransporturi/x-rincon-stream:\(station.url)"
-        } else {
-            let raw = "x-rincon-mp3radio://\(station.url)"
-            let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
-            let enc = raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
-            path = "\(baseURL)/\(safeRoom)/setavtransporturi/\(enc)"
+            let safeRoom = room.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? room
+            let path: String
+            
+            if station.isFavorite {
+                let encoded = station.url.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? station.url
+                path = "\(baseURL)/\(safeRoom)/favorite/\(encoded)"
+            } else if station.isLineIn {
+                // Corrected: The station.url for Line-In already contains the "x-rincon-stream:" prefix.
+                // We just need to encode it properly.
+                let encoded = station.url.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? station.url
+                path = "\(baseURL)/\(safeRoom)/setavtransporturi/\(encoded)"
+            } else {
+                let raw = "x-rincon-mp3radio://\(station.url)"
+                let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+                let enc = raw.addingPercentEncoding(withAllowedCharacters: allowed) ?? raw
+                path = "\(baseURL)/\(safeRoom)/setavtransporturi/\(enc)"
+            }
+            URLSession.shared.dataTask(with: URL(string: path)!) { _,_,_ in completion?() }.resume()
+            print("🔗 Sent request to: \(path)")
         }
-        URLSession.shared.dataTask(with: URL(string: path)!) { _,_,_ in completion?() }.resume()
-        print("🔗 Sent request to: \(path)")
-    }
     
     func togglePlayback(group: SonosGroup) {
         let coord = group.coordinator

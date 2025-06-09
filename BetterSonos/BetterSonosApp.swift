@@ -35,6 +35,7 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
     var enabledLineInUUIDs: Set<String> = []
     var lineInCustomNames: [String: String] = [:] // UUID: Custom Name
     var manuallyDisabledVolumeUUIDs: Set<String> = []
+    var lastModified: Date
     
     enum CodingKeys: String, CodingKey {
         case id, displayName, baseURL, enabled
@@ -44,10 +45,11 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
         case lastKnownServerFavorites
         case enabledLineInUUIDs
         case lineInCustomNames
+        case lastModified
         case manuallyDisabledVolumeUUIDs
     }
 
-    init(id: UUID, displayName: String, baseURL: String, enabled: Bool, showDefaultPresetsForThisNetwork: Bool, explicitlyDisabledFavoriteURLs: Set<String> = [], lastKnownServerFavorites: [Station]? = nil, enabledLineInUUIDs: Set<String> = [], lineInCustomNames: [String: String] = [:],manuallyDisabledVolumeUUIDs: Set<String> = []) {
+    init(id: UUID, displayName: String, baseURL: String, enabled: Bool, showDefaultPresetsForThisNetwork: Bool, explicitlyDisabledFavoriteURLs: Set<String> = [], lastKnownServerFavorites: [Station]? = nil, enabledLineInUUIDs: Set<String> = [], lineInCustomNames: [String: String] = [:], manuallyDisabledVolumeUUIDs: Set<String> = [], lastModified: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.baseURL = baseURL
@@ -58,6 +60,7 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
         self.enabledLineInUUIDs = enabledLineInUUIDs
         self.lineInCustomNames = lineInCustomNames
         self.manuallyDisabledVolumeUUIDs = manuallyDisabledVolumeUUIDs
+        self.lastModified = lastModified
     }
 
     init(from decoder: Decoder) throws {
@@ -73,6 +76,7 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
         lastKnownServerFavorites = try container.decodeIfPresent([Station].self, forKey: .lastKnownServerFavorites)
         enabledLineInUUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .enabledLineInUUIDs) ?? []
         lineInCustomNames = try container.decodeIfPresent([String: String].self, forKey: .lineInCustomNames) ?? [:]
+        lastModified = try container.decodeIfPresent(Date.self, forKey: .lastModified) ?? Date()
         manuallyDisabledVolumeUUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .manuallyDisabledVolumeUUIDs) ?? []
 
         // If 'enabledFavoriteNames' was a key in older data and needs to be explicitly ignored,
@@ -91,6 +95,7 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
         lhs.lastKnownServerFavorites == rhs.lastKnownServerFavorites &&
         lhs.enabledLineInUUIDs == rhs.enabledLineInUUIDs &&
         lhs.lineInCustomNames == rhs.lineInCustomNames &&
+        lhs.lastModified == rhs.lastModified &&
         lhs.manuallyDisabledVolumeUUIDs == rhs.manuallyDisabledVolumeUUIDs
     }
 }
@@ -186,26 +191,55 @@ class NetworkConfigStore: ObservableObject {
     private func loadFromUbiquitousStore() {
         if let iCloudData = ubiquitousStore.data(forKey: Self.iCloudKey) {
             do {
-                let decodedConfigs = try JSONDecoder().decode([NetworkConfig].self, from: iCloudData)
-                // Update the published property on the main thread
+                let cloudConfigs = try JSONDecoder().decode([NetworkConfig].self, from: iCloudData)
+
+                // Perform an intelligent merge instead of a simple replacement
                 DispatchQueue.main.async {
-                    self.configs = decodedConfigs
+                    let localConfigs = self.configs
+                    var mergedConfigs: [NetworkConfig] = []
+                    let localConfigMap = Dictionary(localConfigs.map { ($0.id, $0) }, uniquingKeysWith: { (first, _) in first })
+                    var cloudConfigMap = Dictionary(cloudConfigs.map { ($0.id, $0) }, uniquingKeysWith: { (first, _) in first })
+
+                    // 1. Iterate through local configs to handle modifications and deletions
+                    for local in localConfigs {
+                        if var cloudVersion = cloudConfigMap[local.id] {
+                            // MODIFY CASE: The config exists in both local and cloud.
+                            // We take the one that was modified more recently.
+                            if local.lastModified > cloudVersion.lastModified {
+                                // Local is newer, keep it.
+                                mergedConfigs.append(local)
+                            } else {
+                                // Cloud is newer or same, take cloud.
+                                mergedConfigs.append(cloudVersion)
+                            }
+                            // Remove from cloud map to mark it as processed
+                            cloudConfigMap.removeValue(forKey: local.id)
+                        }
+                        // DELETE CASE: If local config is not in cloud map, it was deleted elsewhere.
+                        // By not adding it to mergedConfigs, we are deleting it locally.
+                    }
+
+                    // 2. ADD CASE: Add any remaining configs from the cloud map.
+                    // These are new configs created on another device.
+                    mergedConfigs.append(contentsOf: cloudConfigMap.values)
+
+                    self.configs = mergedConfigs
+
                     // Also update UserDefaults to keep it as a local cache of the iCloud version.
-                    UserDefaults.standard.set(iCloudData, forKey: Self.key)
-                    NetworkConfigStore.logger.info("Refreshed configurations from iCloud due to external changes.")
+                    if let mergedData = try? JSONEncoder().encode(mergedConfigs) {
+                        UserDefaults.standard.set(mergedData, forKey: Self.key)
+                    }
+
+                    NetworkConfigStore.logger.info("Intelligently merged configurations from iCloud. Total: \(mergedConfigs.count)")
                 }
             } catch {
-                    // Replace print with OSLog once implemented (see section 3)
                 NetworkConfigStore.logger.info("Error decoding configurations from iCloud after notification: \(error). Attempting to load from local UserDefaults.")
-                    // Attempt to load from local as a fallback
-                    self.loadFromLocalStoreAsFallback()
-                }
-            } else {
-                // iCloud data is nil. Check local UserDefaults instead of clearing immediately.
-                // Replace print with OSLog once implemented (see section 3)
-                NetworkConfigStore.logger.info("iCloud data for key \(Self.iCloudKey) is nil after notification. Checking local UserDefaults.")
                 self.loadFromLocalStoreAsFallback()
             }
+        } else {
+            NetworkConfigStore.logger.info("iCloud data for key \(Self.iCloudKey) is nil after notification. Checking local UserDefaults.")
+            self.loadFromLocalStoreAsFallback()
+        }
     }
     
     private func loadFromLocalStoreAsFallback() {
@@ -268,10 +302,13 @@ class NetworkConfigStore: ObservableObject {
     func update(_ config: NetworkConfig) {
         if let idx = configs.firstIndex(where: { $0.id == config.id }) {
             // By creating a mutable copy and re-assigning it, we force @Published to notify its subscribers.
+            var updatedConfig = config
+            updatedConfig.lastModified = Date() // Set modification date on update
+
             var updatedConfigs = configs
-            updatedConfigs[idx] = config
+            updatedConfigs[idx] = updatedConfig
             configs = updatedConfigs // This is the key change that triggers the UI update
-            
+
             save()
         }
     }

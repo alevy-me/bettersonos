@@ -478,6 +478,7 @@ struct BetterSonosView: View {
 struct NetworkAccordionView: View {
     let config: NetworkConfig
     @StateObject private var viewModel: SonosViewModel
+    @State private var isShowingErrorAlert = false
     @State private var isExpanded: Bool = true
 
     // The init now creates the ViewModel using the passed-in stores
@@ -503,9 +504,23 @@ struct NetworkAccordionView: View {
                         .bold()
                         .foregroundColor(.primary)
                     Spacer()
+                    if case .error = viewModel.status {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.orange)
+                            .onTapGesture {
+                                isShowingErrorAlert = true
+                            }
+                    }
                 }
                 .padding(.vertical, 8)
                 .contentShape(Rectangle())
+                .alert("Connection Error", isPresented: $isShowingErrorAlert) {
+                    Button("OK", role: .cancel) { }
+                } message: {
+                    if case .error(let message) = viewModel.status {
+                        Text(message)
+                    }
+                }
             }
             if isExpanded {
                 // The GroupedRoomsListView now gets its dependencies from the viewModel and config
@@ -1028,6 +1043,14 @@ struct NetworkEditModal: View {
     
 }
 
+// MARK: - Network Status Enum
+
+enum NetworkStatus: Equatable {
+    case connected
+    case connecting
+    case error(String)
+}
+
 // MARK: - ViewModel & Models (FULL)
 
 class SonosViewModel: NSObject, ObservableObject {
@@ -1046,6 +1069,11 @@ class SonosViewModel: NSObject, ObservableObject {
     @Published var uuidToRoomName: [String: String] = [:]
     @Published private var roomNameEncodingMap: [String: String] = [:]
     @Published var accordionState: [String: Bool] = [:]
+    @Published var status: NetworkStatus = .connecting
+
+    private var retryAttempts = 0
+    private let maxRetryAttempts = 5 // Stop after this many consecutive failures
+    private var reconnectWorkItem: DispatchWorkItem?
     
     private let networkStore: NetworkConfigStore
     private let settingsStore: AppSettingsStore // Declare type, will be initialized in init
@@ -1217,19 +1245,26 @@ class SonosViewModel: NSObject, ObservableObject {
         do {
             print("🌐 Fetching zones from \(baseURL)")
 
-            let favoriteNames = try await fetchFavoriteNames()  // ✅ NEW
-            // Convert favorite names (Strings) to Station objects
-                    let favoriteStations = favoriteNames.map { Station(name: $0, url: $0, type: "favorite") }
+            let favoriteNames = try await fetchFavoriteNames()
+            let favoriteStations = favoriteNames.map { Station(name: $0, url: $0, type: "favorite") }
 
-                    if let configID = networkStore.configs.first(where: { $0.baseURL == baseURL })?.id {
-                        networkStore.mergeFavorites(for: configID, newFavoritesFromServer: favoriteStations)
-                    }
+            if let configID = networkStore.configs.first(where: { $0.baseURL == baseURL })?.id {
+                networkStore.mergeFavorites(for: configID, newFavoritesFromServer: favoriteStations)
+            }
             let (data, _) = try await URLSession.shared.data(from: url)
             let decoder = JSONDecoder()
             let zones = try decoder.decode([Zone].self, from: data)
             processZones(zones)
+
+            // On successful refresh, status is connected.
+            if self.status != .connected {
+                self.status = .connected
+            }
+
         } catch {
             print("Error refreshing Sonos state: \(error)")
+            // On failure, set status to error.
+            self.status = .error("Failed to refresh speaker status. Please check your connection to the node-sonos-http-api server.")
         }
     }
     
@@ -1770,227 +1805,184 @@ class SonosViewModel: NSObject, ObservableObject {
             return "Nothing queued" // Final fallback if no other information is available
     }
     
-    // MARK: - SSE Event Listener for /events
-    
     private var sseTask: URLSessionDataTask?
     private var debounceWorkItem: DispatchWorkItem?
     private var isObservingAppState = false
+
+    private func scheduleSseReconnect() {
+        // Cancel any previously scheduled reconnect
+        reconnectWorkItem?.cancel()
+
+        guard retryAttempts < maxRetryAttempts else {
+            print("SonosViewModel: [SSE] Maximum retry attempts reached. Halting reconnection attempts.")
+            DispatchQueue.main.async {
+                self.status = .error("Live connection to server lost. Status updates may be delayed.")
+            }
+            return
+        }
+
+        // Calculate delay with exponential backoff
+        let delay = pow(2.0, Double(retryAttempts))
+        print("SonosViewModel: [SSE] Connection failed. Will attempt to reconnect in \(delay) seconds (Attempt \(retryAttempts + 1)/\(maxRetryAttempts)).")
+
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.startListeningForEvents()
+        }
+        reconnectWorkItem = workItem
+
+        DispatchQueue.global().asyncAfter(deadline: .now() + delay, execute: workItem)
+    }
+
     private var pollTimer: Timer?
-    
+
     private func startListeningForEvents() {
-        // Ensure any existing task is properly stopped first
-        if sseTask != nil {
-            print("SonosViewModel: [SSE] startListeningForEvents called while sseTask was not nil. Stopping existing task first.")
-            stopListeningForEvents()
+        // 1. Cleanup any previous/pending tasks
+        stopListeningForEvents()
+
+        // 2. Set initial status
+        DispatchQueue.main.async {
+            self.status = .connecting
         }
 
         print("SonosViewModel: [SSE] Attempting to start listening for events...")
         guard let url = URL(string: "\(baseURL)/events") else {
             print("SonosViewModel: [SSE] Invalid URL for /events endpoint: \(baseURL)/events")
+            DispatchQueue.main.async { self.status = .error("Invalid server URL.") }
             return
         }
 
         var request = URLRequest(url: url)
         request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
-        request.timeoutInterval = TimeInterval(integerLiteral: 300) // Longer timeout for SSE
+        request.timeoutInterval = TimeInterval(integerLiteral: 300)
 
         let config = URLSessionConfiguration.default
-        // Ensure keep-alive, though default is usually fine
         config.httpAdditionalHeaders = ["Connection": "keep-alive"]
-
-        let session = URLSession(configuration: config, delegate: self, delegateQueue: .main) // delegateQueue: .main is important if you update UI directly from delegate methods, but here we dispatch via Task to @MainActor
+        let session = URLSession(configuration: config, delegate: self, delegateQueue: .main)
 
         sseTask = session.dataTask(with: request)
-        print("SonosViewModel: [SSE] New sseTask created with ID: \(sseTask?.taskIdentifier ?? 0). Resuming...")
         sseTask?.resume()
-        // You can check task state immediately after resume, but it might not have transitioned to .running instantly
-        // A slight delay might be needed to log a meaningful .state
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
-            guard let state = self.sseTask?.state else { print("SonosViewModel: [SSE] sseTask is nil after 0.1s."); return }
-            switch state {
-                case .running: print("SonosViewModel: [SSE] sseTask state: running")
-                case .suspended: print("SonosViewModel: [SSE] sseTask state: suspended")
-                case .canceling: print("SonosViewModel: [SSE] sseTask state: canceling")
-                case .completed: print("SonosViewModel: [SSE] sseTask state: completed")
-                @unknown default: print("SonosViewModel: [SSE] sseTask state: unknown")
-            }
-        }
 
-        startPollingEvery60Seconds() // This seems okay
-        observeAppLifecycle()       // This seems okay
+        startPollingEvery60Seconds()
+        observeAppLifecycle()
     }
 
     private func stopListeningForEvents() {
-        print("SonosViewModel: [SSE] Attempting to stop listening for events. Current sseTask ID: \(sseTask?.taskIdentifier ?? 0)")
+        reconnectWorkItem?.cancel()
+        reconnectWorkItem = nil
+
         sseTask?.cancel()
-        // According to Apple docs, a session should be invalidated if no longer needed or if its delegate is going away.
-        // If you reuse the same URLSession object, don't invalidate. If you create a new one each time in startListeningForEvents,
-        // then the old one's session might need invalidation. The current code creates a new session each time.
-        // sseTask?.session.invalidateAndCancel() // Consider this if you don't reuse the session.
         sseTask = nil
-        pollTimer?.invalidate() // This is correct
-        pollTimer = nil         // This is correct
-        print("SonosViewModel: [SSE] Event listening stopped.")
+
+        pollTimer?.invalidate()
+        pollTimer = nil
     }
-    
+
     private func observeAppLifecycle() {
         guard !isObservingAppState else { return }
         isObservingAppState = true
         NotificationCenter.default.addObserver(forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { [weak self] _ in
-            Task { @MainActor [weak self] in
-                self?.stopListeningForEvents()
-            }
+            self?.retryAttempts = 0 // Reset retries on background
+            self?.stopListeningForEvents()
         }
         NotificationCenter.default.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main) { [weak self] _ in
+            self?.retryAttempts = 0 // Reset retries on foreground
+            self?.startListeningForEvents()
             Task { @MainActor [weak self] in
-                self?.startListeningForEvents()
-                
-                // Add this line to explicitly call refresh:
-                print("App entered foreground. Explicitly refreshing SonosViewModel.") // Optional: for logging
-                await self?.refresh() // This will ensure each ViewModel fetches fresh data
+                await self?.refresh()
             }
         }
     }
-    
+
     @MainActor
     private func debouncedRefresh() {
-        print("🔁 debouncedRefresh() triggered")
         debounceWorkItem?.cancel()
         let workItem = DispatchWorkItem {
             Task { @MainActor [weak self] in
-                print("🔁 Debounce: immediate refresh")
                 await self?.refresh()
-                
-                try? await Task.sleep(nanoseconds: 2_000_000_000)  // 2s retry
-                print("🔁 Debounce: 2s retry")
-                await self?.refresh()
-                
-                // try? await Task.sleep(nanoseconds: 3_000_000_000)  // 3s after that = 5s total
-                // print("🔁 Debounce: 5s retry")
-                // await self?.refresh()
             }
         }
         debounceWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: workItem)
     }
-    
+
     private func startPollingEvery60Seconds() {
+        // Ensure we don't create multiple timers
+        pollTimer?.invalidate()
         pollTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.refresh()
             }
         }
     }
-    
+
     private struct SSEEvent: Decodable {
         let type: String
     }
-    
 }
 
 // MARK: - URLSessionDataDelegate for SSE
 
 extension SonosViewModel: URLSessionDataDelegate {
 
-    // Called when the data task receives data.
     func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
+        // If we receive any data, the connection is alive.
+        // Reset retry counter and set status to connected.
+        DispatchQueue.main.async {
+            if self.retryAttempts > 0 || self.status != .connected {
+                print("SonosViewModel: [SSE] Connection re-established.")
+                self.retryAttempts = 0
+                self.status = .connected
+            }
+        }
+
         guard let chunk = String(data: data, encoding: .utf8) else {
-            print("SonosViewModel: [SSE] FATAL: Failed to decode data chunk to UTF8 string. Task ID: \(dataTask.taskIdentifier)")
+            print("SonosViewModel: [SSE] Failed to decode data chunk to UTF8 string.")
             return
         }
 
-        let receivedTimestamp = Date()
-        // Log the entire raw chunk to see exactly what's coming in
-        print("SonosViewModel: [SSE] Raw data chunk received at \(receivedTimestamp). Task ID: \(dataTask.taskIdentifier)\n---CHUNK START---\n\(chunk.trimmingCharacters(in: .whitespacesAndNewlines))\n---CHUNK END---")
-
+        // Process the event data to trigger debounced refreshes
         for line in chunk.components(separatedBy: "\n") {
-            let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
-            // print("SonosViewModel: [SSE] Processing line: '\(trimmedLine)'") // Enable for extremely verbose line-by-line processing
+            guard line.hasPrefix("data:") else { continue }
+            let jsonString = String(line.dropFirst("data:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
 
-            // Standard SSE format: lines starting with "data:" contain event data.
-            // Lines starting with ":" are comments and should be ignored.
-            // Empty lines can be used as separators.
-            guard trimmedLine.hasPrefix("data:") else {
-                if !trimmedLine.isEmpty && !trimmedLine.starts(with: ":") {
-                    print("SonosViewModel: [SSE] Skipping line (no 'data:' prefix or not an SSE comment): '\(trimmedLine)'. Task ID: \(dataTask.taskIdentifier)")
+            if let eventData = jsonString.data(using: .utf8),
+               let event = try? JSONDecoder().decode(SSEEvent.self, from: eventData),
+               (event.type == "topology-change" || event.type == "transport-state") {
+
+                Task { @MainActor [weak self] in
+                    self?.debouncedRefresh()
                 }
-                continue
-            }
-
-            // Extract the JSON string part after "data:"
-            let jsonString = String(trimmedLine.dropFirst("data:".count)).trimmingCharacters(in: .whitespacesAndNewlines)
-
-            if jsonString.isEmpty {
-                print("SonosViewModel: [SSE] Skipping line: 'data:' prefix found but JSON content is empty. Task ID: \(dataTask.taskIdentifier)")
-                continue
-            }
-            
-            print("SonosViewModel: [SSE] Attempting to decode JSON: '\(jsonString)'. Task ID: \(dataTask.taskIdentifier)")
-            if let eventData = jsonString.data(using: .utf8) {
-                do {
-                    let event = try JSONDecoder().decode(SSEEvent.self, from: eventData) // Assumes SSEEvent is defined
-                    print("SonosViewModel: [SSE] Successfully decoded event: TYPE='\(event.type)'. Task ID: \(dataTask.taskIdentifier)")
-                    
-                    // Handle specific event types
-                    if event.type == "topology-change" || event.type == "transport-state" {
-                        Task { @MainActor [weak self] in
-                            print("SonosViewModel: [SSE] Relevant event '\(event.type)' received. Triggering debounced refresh. Task ID: \(dataTask.taskIdentifier)")
-                            self?.debouncedRefresh()
-                        }
-                    }
-                } catch {
-                    print("SonosViewModel: [SSE] JSON DECODING ERROR: \(error.localizedDescription) for string: '\(jsonString)'. Task ID: \(dataTask.taskIdentifier)")
-                }
-            } else {
-                print("SonosViewModel: [SSE] Could not convert JSON string to Data: '\(jsonString)'. Task ID: \(dataTask.taskIdentifier)")
             }
         }
     }
 
-    // Called when a task finishes transferring data, either successfully or with an error.
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-        let completionTimestamp = Date()
-        if let error = error {
-            // This is a critical log. If you see this, the SSE stream has stopped due to an error.
-            print("SonosViewModel: [SSE] Task \(task.taskIdentifier) didCompleteWithError at \(completionTimestamp): \(error.localizedDescription)")
-            print("SonosViewModel: [SSE] Underlying error details: \(error as NSError)")
+        // This method is called when the connection is lost for any reason.
 
-            // Optional: Implement a retry mechanism here if desired.
-            // Task { @MainActor [weak self] in
-            //     print("SonosViewModel: [SSE] Will try to restart SSE in 5 seconds due to error on task \(task.taskIdentifier).")
-            //     try? await Task.sleep(nanoseconds: 5_000_000_000) // 5-second delay
-            //     self?.stopListeningForEvents() // Ensure clean state
-            //     self?.startListeningForEvents()
-            // }
-        } else {
-            // This means the task completed without an error object.
-            // For an SSE stream, this might mean the connection was closed cleanly by the server
-            // or by the client (e.g., calling sseTask.cancel()).
-            print("SonosViewModel: [SSE] Task \(task.taskIdentifier) didCompleteWithError: nil (completed without an explicit error object, connection closed) at \(completionTimestamp).")
+        // First, check if the error was an intentional cancellation. If so, we do nothing.
+        if let error = error as? URLError, error.code == .cancelled {
+            print("SonosViewModel: [SSE] Task cancelled intentionally. No retry will be scheduled.")
+            return
         }
-        // Since the task is complete (either with or without error),
-        // you might want to ensure that this specific SSE task is no longer considered active.
-        // If `stopListeningForEvents()` isn't called, and `startListeningForEvents()` creates a new task, this might be okay.
-        // However, if the error is transient, a robust retry mechanism in `startListeningForEvents` or here would be good.
-        // The current `startListeningForEvents` called on foregrounding acts as a form of retry.
+
+        // For any other error (or a clean server-side close), we treat it as a disconnection
+        // and attempt to reconnect using our new retry logic.
+        print("SonosViewModel: [SSE] Task didCompleteWithError: \(error?.localizedDescription ?? "Connection closed by server"). Scheduling reconnect.")
+
+        DispatchQueue.main.async {
+            // Set status to connecting to provide immediate feedback if UI depends on it
+            self.status = .connecting
+            self.retryAttempts += 1
+            self.scheduleSseReconnect()
+        }
     }
 
-    // Called when the session becomes invalid.
     func urlSession(_ session: URLSession, didBecomeInvalidWithError error: Error?) {
-        let invalidationTimestamp = Date()
-        if let error = error {
-            print("SonosViewModel: [SSE] Session became invalid with error at \(invalidationTimestamp): \(error.localizedDescription)")
-        } else {
-            print("SonosViewModel: [SSE] Session became invalid without an explicit error at \(invalidationTimestamp).")
+        // This is a more serious session-level error.
+        print("SonosViewModel: [SSE] Session became invalid with error: \(error?.localizedDescription ?? "Unknown error")")
+        DispatchQueue.main.async {
+            self.status = .error("The connection session became invalid. Will attempt to restart on next app foreground.")
         }
-        // When a session becomes invalid, all tasks within it are cancelled.
-        // You might want to ensure cleanup or attempt to re-establish a new session and tasks.
-        // Task { @MainActor [weak self] in
-        //     print("SonosViewModel: [SSE] Session invalidated. Ensuring event listening is stopped and attempting restart.")
-        //     self?.stopListeningForEvents()
-        //     // Consider if an immediate restart is appropriate or should be delayed/conditional
-        //     // self?.startListeningForEvents()
-        // }
     }
 }
 

@@ -951,6 +951,10 @@ struct NetworkEditModal: View {
         do {
             let (data, _) = try await URLSession.shared.data(from: url)
             let serverFavoriteNames = try JSONDecoder().decode([String].self, from: data) // Names from server
+            // Also update the edited config's lastKnownServerFavorites
+            // This ensures that if new favorites were added on the server, we save them.
+            let serverFavoriteStations = serverFavoriteNames.map { Station(name: $0, url: $0, type: "favorite") }
+            editedConfig.lastKnownServerFavorites = serverFavoriteStations.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
             await MainActor.run {
                 self.fetchedFavorites = serverFavoriteNames.sorted() // Update the list used to RENDER the toggles.

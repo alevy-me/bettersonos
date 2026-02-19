@@ -151,10 +151,8 @@ struct NetworkSettingsModal: View {
                 }
             }
             .onDelete { indexSet in
-                print("Before:", settings.manualStations.map(\.name))
                 settings.manualStations.remove(atOffsets: indexSet)
-                settings.manualStations = settings.manualStations
-                print("After:", settings.manualStations.map(\.name))            }
+            }
 
             VStack {
                 TextField("Station Name", text: $newStationName)
@@ -181,7 +179,7 @@ struct NetworkSettingsModal: View {
                     // The scheme ensures it starts with http or https
                     
                     if let fullStationURL = joinURL(scheme: newStationScheme, address: trimmedAddress) {
-                        let newStation = Station(name: trimmedName, url: fullStationURL, type: "stream")
+                        let newStation = Station(name: trimmedName, url: fullStationURL, type: .stream)
                         if !settings.manualStations.contains(where: { $0.url == newStation.url }) {
                             settings.manualStations.append(newStation)
                         }

@@ -49,10 +49,6 @@ final class SonosViewModel: ObservableObject {
     private let settingsStore: AppSettingsStore
     private var cancellables = Set<AnyCancellable>()
 
-    private let connectUUIDs: Set<String> = [
-        "RINCON_B8000000000000000"  // Example hardcoded Connect UUID
-    ]
-
     // Status inputs. `status` is derived from these in updateStatus().
     private var hasLoadedZones = false
     private var refreshError: String?
@@ -155,7 +151,7 @@ final class SonosViewModel: ObservableObject {
         var newVolumeDisabled: [String: Bool] = [:]
         var newUUIDToRoomName: [String: String] = [:]
 
-        let manuallyDisabledUUIDs = currentConfig?.manuallyDisabledVolumeUUIDs ?? []
+        let config = currentConfig
 
         for zone in zones {
             let coordinator = zone.coordinator
@@ -163,7 +159,7 @@ final class SonosViewModel: ObservableObject {
 
             for member in [coordinator] + zone.members {
                 let room = member.roomName
-                newVolumeDisabled[room] = connectUUIDs.contains(member.uuid) || manuallyDisabledUUIDs.contains(member.uuid)
+                newVolumeDisabled[room] = config?.isVolumeDisabled(forPlayer: member.uuid) ?? Constants.fixedVolumeUUIDs.contains(member.uuid)
                 newVolume[room] = member.state.volume
                 newMuted[room] = member.state.mute
                 newPlayback[room] = member.state.playbackState

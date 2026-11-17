@@ -35,6 +35,10 @@ public enum Constants {
     public static let maxReconnectDelay: TimeInterval = 60
     /// Minimum interval between automatic retries of an incomplete station list.
     public static let stationRetryInterval: TimeInterval = 60
+    /// Players whose volume is always fixed, such as a Connect on line-level output.
+    public static let fixedVolumeUUIDs: Set<String> = [
+        "RINCON_B8000000000000000"  // Example hardcoded Connect UUID
+    ]
 }
 
 // MARK: - URL Input Helpers
@@ -131,6 +135,12 @@ public struct NetworkConfig: Codable, Identifiable, Hashable {
         lineInCustomNames = try container.decodeIfPresent([String: String].self, forKey: .lineInCustomNames) ?? [:]
         lastModified = try container.decodeIfPresent(Date.self, forKey: .lastModified) ?? Date()
         manuallyDisabledVolumeUUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .manuallyDisabledVolumeUUIDs) ?? []
+    }
+
+    /// True when the apps should gray out volume for this player: a known fixed-volume device,
+    /// or one the user disabled for this network in Disable Volume Control.
+    public func isVolumeDisabled(forPlayer uuid: String) -> Bool {
+        Constants.fixedVolumeUUIDs.contains(uuid) || manuallyDisabledVolumeUUIDs.contains(uuid)
     }
 
     /// True when the station list for this network would otherwise be empty, which forces the default presets on.
@@ -294,6 +304,13 @@ public struct Member: Codable {
     public let roomName: String
     public let uuid: String
     public let state: PlayerState
+    /// Volume and mute for the whole group this player belongs to. Optional so older servers still decode.
+    public let groupState: GroupState?
+}
+
+public struct GroupState: Codable, Equatable {
+    public let volume: Int
+    public let mute: Bool
 }
 
 public struct Track: Codable, Equatable {

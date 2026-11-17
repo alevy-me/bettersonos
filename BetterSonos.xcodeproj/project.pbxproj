@@ -8,10 +8,37 @@
 
 /* Begin PBXBuildFile section */
 		7ACB0C0E2E00000000000001 /* BetterSonosCore in Frameworks */ = {isa = PBXBuildFile; productRef = 7ACB0C0E2E00000000000002 /* BetterSonosCore */; };
+		7ACB0D0E2E00000000000014 /* BetterSonosCore in Frameworks */ = {isa = PBXBuildFile; productRef = 7ACB0D0E2E00000000000015 /* BetterSonosCore */; };
+		7ACB0D0E2E0000000000001C /* BetterSonosWatch.app in Embed Watch Content */ = {isa = PBXBuildFile; fileRef = 7ACB0D0E2E00000000000010 /* BetterSonosWatch.app */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		7ACB0D0E2E0000000000001E /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 7A59FBC22DB2ACDF00F7AD7E /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 7ACB0D0E2E00000000000018;
+			remoteInfo = BetterSonosWatch;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		7ACB0D0E2E0000000000001D /* Embed Watch Content */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/Watch";
+			dstSubfolderSpec = 16;
+			files = (
+				7ACB0D0E2E0000000000001C /* BetterSonosWatch.app in Embed Watch Content */,
+			);
+			name = "Embed Watch Content";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
 		7A59FBCA2DB2ACDF00F7AD7E /* BetterSonos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BetterSonos.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		7ACB0D0E2E00000000000010 /* BetterSonosWatch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BetterSonosWatch.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
@@ -22,6 +49,14 @@
 			);
 			target = 7A59FBC92DB2ACDF00F7AD7E /* BetterSonos */;
 		};
+		7ACB0D0E2E00000000000012 /* Exceptions for "BetterSonosWatch" folder in "BetterSonosWatch" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				BetterSonosWatch.entitlements,
+				Info.plist,
+			);
+			target = 7ACB0D0E2E00000000000018 /* BetterSonosWatch */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -31,6 +66,14 @@
 				7AB1F4F32DB6E76D00773C35 /* Exceptions for "BetterSonos" folder in "BetterSonos" target */,
 			);
 			path = BetterSonos;
+			sourceTree = "<group>";
+		};
+		7ACB0D0E2E00000000000011 /* BetterSonosWatch */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				7ACB0D0E2E00000000000012 /* Exceptions for "BetterSonosWatch" folder in "BetterSonosWatch" target */,
+			);
+			path = BetterSonosWatch;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -44,6 +87,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7ACB0D0E2E00000000000013 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				7ACB0D0E2E00000000000014 /* BetterSonosCore in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -51,6 +102,7 @@
 			isa = PBXGroup;
 			children = (
 				7A59FBCC2DB2ACDF00F7AD7E /* BetterSonos */,
+				7ACB0D0E2E00000000000011 /* BetterSonosWatch */,
 				7A59FBCB2DB2ACDF00F7AD7E /* Products */,
 			);
 			sourceTree = "<group>";
@@ -59,6 +111,7 @@
 			isa = PBXGroup;
 			children = (
 				7A59FBCA2DB2ACDF00F7AD7E /* BetterSonos.app */,
+				7ACB0D0E2E00000000000010 /* BetterSonosWatch.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -73,10 +126,12 @@
 				7A59FBC62DB2ACDF00F7AD7E /* Sources */,
 				7A59FBC72DB2ACDF00F7AD7E /* Frameworks */,
 				7A59FBC82DB2ACDF00F7AD7E /* Resources */,
+				7ACB0D0E2E0000000000001D /* Embed Watch Content */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				7ACB0D0E2E0000000000001F /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				7A59FBCC2DB2ACDF00F7AD7E /* BetterSonos */,
@@ -87,6 +142,29 @@
 			);
 			productName = BetterSonos;
 			productReference = 7A59FBCA2DB2ACDF00F7AD7E /* BetterSonos.app */;
+			productType = "com.apple.product-type.application";
+		};
+		7ACB0D0E2E00000000000018 /* BetterSonosWatch */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 7ACB0D0E2E00000000000019 /* Build configuration list for PBXNativeTarget "BetterSonosWatch" */;
+			buildPhases = (
+				7ACB0D0E2E00000000000016 /* Sources */,
+				7ACB0D0E2E00000000000013 /* Frameworks */,
+				7ACB0D0E2E00000000000017 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				7ACB0D0E2E00000000000011 /* BetterSonosWatch */,
+			);
+			name = BetterSonosWatch;
+			packageProductDependencies = (
+				7ACB0D0E2E00000000000015 /* BetterSonosCore */,
+			);
+			productName = BetterSonosWatch;
+			productReference = 7ACB0D0E2E00000000000010 /* BetterSonosWatch.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -101,6 +179,9 @@
 				TargetAttributes = {
 					7A59FBC92DB2ACDF00F7AD7E = {
 						CreatedOnToolsVersion = 16.2;
+					};
+					7ACB0D0E2E00000000000018 = {
+						CreatedOnToolsVersion = 27.2;
 					};
 				};
 			};
@@ -122,12 +203,20 @@
 			projectRoot = "";
 			targets = (
 				7A59FBC92DB2ACDF00F7AD7E /* BetterSonos */,
+				7ACB0D0E2E00000000000018 /* BetterSonosWatch */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		7A59FBC82DB2ACDF00F7AD7E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		7ACB0D0E2E00000000000017 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -144,7 +233,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		7ACB0D0E2E00000000000016 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		7ACB0D0E2E0000000000001F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 7ACB0D0E2E00000000000018 /* BetterSonosWatch */;
+			targetProxy = 7ACB0D0E2E0000000000001E /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		7A59FBD82DB2ACE100F7AD7E /* Debug */ = {
@@ -345,6 +449,68 @@
 			};
 			name = Release;
 		};
+		7ACB0D0E2E0000000000001A /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BetterSonosWatch/BetterSonosWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9J857XHJMC;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = BetterSonosWatch/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Better Sonos";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = show.nola.BetterSonos;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = show.nola.BetterSonos.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Debug;
+		};
+		7ACB0D0E2E0000000000001B /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = BetterSonosWatch/BetterSonosWatch.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 9J857XHJMC;
+				ENABLE_PREVIEWS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = BetterSonosWatch/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = "Better Sonos";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown";
+				INFOPLIST_KEY_WKCompanionAppBundleIdentifier = show.nola.BetterSonos;
+				INFOPLIST_KEY_WKRunsIndependentlyOfCompanionApp = YES;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = show.nola.BetterSonos.watchkitapp;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = watchos;
+				SKIP_INSTALL = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 4;
+				WATCHOS_DEPLOYMENT_TARGET = 10.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -366,6 +532,15 @@
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
 		};
+		7ACB0D0E2E00000000000019 /* Build configuration list for PBXNativeTarget "BetterSonosWatch" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7ACB0D0E2E0000000000001A /* Debug */,
+				7ACB0D0E2E0000000000001B /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 /* End XCConfigurationList section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -377,6 +552,10 @@
 
 /* Begin XCSwiftPackageProductDependency section */
 		7ACB0C0E2E00000000000002 /* BetterSonosCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BetterSonosCore;
+		};
+		7ACB0D0E2E00000000000015 /* BetterSonosCore */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BetterSonosCore;
 		};

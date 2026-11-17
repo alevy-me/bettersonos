@@ -65,7 +65,7 @@ Through the phone, each request costs 600 to 850 ms, so one request per Crown de
 - While a change is pending or in flight, ignore server volume for that room, so a poll cannot snap the number back mid-turn.
 - Refresh after the request completes.
 
-For a group, the Crown should probably drive group volume. node-sonos-http-api has a `groupVolume` action, but it is not in `SonosAPIReference.md`; confirm the endpoint against the server before building on it.
+Room first: the Crown and mute act on the room you opened. For a grouped room, a toolbar button switches them to the whole group (`/<coordinator>/groupvolume/<n>`, `groupmute`, `groupunmute`; all confirmed in the node-sonos-http-api source). Play and pause always act on the room's group.
 
 ### Fast path to pause
 
@@ -74,8 +74,8 @@ Persist the last network and room in `UserDefaults` and launch straight into tha
 ## Screens
 
 1. **Networks.** A list of enabled configs. Skipped when only one is enabled.
-2. **Rooms.** Groups by coordinator, with joiner count, now-playing line and a play state icon.
-3. **Room.** Now playing, a large play/pause button and the volume value driven by the Crown. Phase 2 adds a Presets button.
+2. **Rooms.** Every speaker as its own row, with its group's members, now-playing line and a play state icon.
+3. **Room.** Now playing, the volume value driven by the Crown, play/pause and mute, and a toolbar button for whole-group control when grouped. Phase 2 adds a Presets button.
 4. **Presets (phase 2).** The filtered station list for the network; tap to play. Built on the watch with `StationListBuilder` (the test shows the watch can fetch CSVs directly), and cached in `UserDefaults` so it appears instantly on the next launch.
 
 ## Phases
@@ -87,13 +87,13 @@ Each phase ends with a build, a test on the real watch, and a commit.
 2. **Presets.**
 3. **Optional: a Smart Stack widget** with play/pause for the last room, using App Intents. The same intents would give Siri ("pause the kitchen") on both devices.
 
-## Decisions needed
+## Decisions
 
-- **Companion or watch-only app.** Recommend companion with `WKRunsIndependentlyOfCompanionApp`, so it installs with the iOS app and still works without the phone.
-- **Group volume or coordinator volume** on the Crown when a room is grouped. Recommend group volume, pending the endpoint check.
-- **Mute on the watch.** Cheap to add with `/mute` and `/unmute`, but not in the stated scope.
-- **Minimum watchOS.** The test used watchOS 10. Recommend 10 unless a later API is needed, most likely for the widget in phase 3.
-- **`WatchNetTest/`.** Delete it once phase 1 works, or keep it as a diagnostic tool.
+- **Packaging:** companion app with `WKRunsIndependentlyOfCompanionApp`.
+- **Volume and mute:** room first, whole group one tap away.
+- **Mute:** in.
+- **Minimum watchOS:** 10.
+- **`WatchNetTest/`:** open; delete or keep once phase 1 works.
 
 ## Risks
 

@@ -70,46 +70,18 @@ struct NetworkEditModal: View {
         _baseScheme = State(initialValue: scheme) // This will drive editedConfig.baseURL on save
         _baseAddress = State(initialValue: address) // This will drive editedConfig.baseURL on save
 
-        // DisplayName can be bound directly to editedConfig.displayName
-        // Enabled can be bound directly to editedConfig.enabled
-        // showDefaultPresetsForThisNetwork to editedConfig.showDefaultPresetsForThisNetwork
-        // explicitlyDisabledFavoriteURLs to editedConfig.explicitlyDisabledFavoriteURLs
-
-        // Other @State vars for modal's own logic, not directly part of NetworkConfig
-        _error = State(initialValue: nil)
-        _showDeleteAlert = State(initialValue: false)
         _fetchedFavorites = State(initialValue: initialConfig.lastKnownServerFavorites?.map { $0.url } ?? [])
-        _isLoadingFavorites = State(initialValue: false)
-        _favoritesError = State(initialValue: false)
-
-        // The new Line-In @State vars are already declared with default initializers:
-        // _potentialLineInSources = State(initialValue: [])
-        // _isLoadingLineInSources = State(initialValue: false)
-        // _lineInSourcesError = State(initialValue: nil)
     }
 
+    /// Default presets are forced on when this network would otherwise have no presets at all.
+    /// Uses the favorites fetched in this sheet, so a new network is evaluated against its real favorites.
     private var isForcedDefaultNetwork: Bool {
-        // Definition of "Zero Presets" for a given Network (Evaluated Dynamically):
-        // 1. Global Custom CSV: AppSettingsStore.remoteCSVURL is nil or empty.
-        let globalCustomCSVEmpty = settingsStore.remoteCSVURL == nil || settingsStore.remoteCSVURL?.isEmpty == true
-
-        // 2. Global Manual Stations: AppSettingsStore.manualStations is empty.
-        let globalManualStationsEmpty = settingsStore.manualStations.isEmpty
-
-        // 3. This Specific Network's Sonos Favorites:
-        // The list of effectively enabled Sonos favorites for this specific network is empty.
-        // An "enabled" favorite means its URL is present in thisNetwork.lastKnownServerFavorites
-        // (represented by fetchedFavorites here for the current view) AND its URL
-        // is not in thisNetwork.explicitlyDisabledFavoriteURLs.
-
-        let effectivelyEnabledFavoritesCount = (initialConfig.lastKnownServerFavorites ?? []).filter { station in
-            !editedConfig.explicitlyDisabledFavoriteURLs.contains(station.url) // station.url is the favorite name/key
-        }.count
-
-        let networkFavoritesEmpty = effectivelyEnabledFavoritesCount == 0
-
-        // "Forced Default" Rule:
-        return globalCustomCSVEmpty && globalManualStationsEmpty && networkFavoritesEmpty
+        NetworkConfig.isForcedDefault(
+            remoteCSVURL: settingsStore.remoteCSVURL,
+            manualStations: settingsStore.manualStations,
+            favorites: editedConfig.lastKnownServerFavorites,
+            disabledFavoriteURLs: editedConfig.explicitlyDisabledFavoriteURLs
+        )
     }
 
     private var effectiveShowDefaultPresetsForThisNetwork: Bool {
@@ -119,33 +91,15 @@ struct NetworkEditModal: View {
         return editedConfig.showDefaultPresetsForThisNetwork // User's preference
     }
     
-    // Helper functions for URL parsing
     private static func splitURL(_ fullURL: String?) -> (scheme: String, address: String) {
-        guard let urlString = fullURL, !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ("http://", "") // Sonos HTTP API often defaults to http, and usually has an address
-        }
-        if urlString.lowercased().hasPrefix("http://") {
-            return ("http://", String(urlString.dropFirst("http://".count)))
-        } else if urlString.lowercased().hasPrefix("https://") {
-            return ("https://", String(urlString.dropFirst("https://".count)))
-        } else {
-            // If no scheme, assume http for Sonos API and treat full string as address
-            return ("http://", urlString)
-        }
+        // The Sonos HTTP API is usually served over plain http.
+        URLInput.split(fullURL, defaultScheme: "http://")
     }
 
     private static func joinURL(scheme: String, address: String) -> String? {
-        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedAddress.isEmpty {
-            return scheme
-        }
-        // Ensure address doesn't accidentally start with another scheme
-        if trimmedAddress.lowercased().hasPrefix("http://") || trimmedAddress.lowercased().hasPrefix("https://") {
-            return trimmedAddress // Address itself is a full URL, use it. This is a fallback.
-        }
-        return scheme + trimmedAddress
+        URLInput.join(scheme: scheme, address: address).map(URLInput.normalizedBaseURL)
     }
-    
+
     private var constructedFullBaseURL: String? {
         NetworkEditModal.joinURL(scheme: baseScheme, address: baseAddress.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -386,15 +340,9 @@ struct NetworkEditModal: View {
                             }
 
                             error = nil
-                            var finalConfigToSave = editedConfig // Start with the edited copy
-                            finalConfigToSave.baseURL = constructedBaseURL // Update its baseURL from the scheme/address pickers
-
-                            // Properties like displayName, showDefaultPresetsForThisNetwork,
-                            // explicitlyDisabledFavoriteURLs, enabledLineInUUIDs, and lineInCustomNames
-                            // are already up-to-date within 'editedConfig' due to direct UI bindings.
-                            // The 'enabled' property of the config was set from initialConfig.enabled
-                            // and is not changed by this modal's UI, so it's correctly preserved in editedConfig.
-
+                            var finalConfigToSave = editedConfig
+                            // joinURL normalizes the address (no trailing slash).
+                            finalConfigToSave.baseURL = constructedBaseURL
                             onSave(finalConfigToSave)
                     }
                 }
@@ -405,60 +353,48 @@ struct NetworkEditModal: View {
     func fetchFavoritesIfNeeded() async {
         guard let currentFullBaseURL = constructedFullBaseURL, // Use the computed property
                   let url = URL(string: "\(currentFullBaseURL)/favorites") else {
-            await MainActor.run { // Ensure UI updates are on main actor
-                self.favoritesError = true // Indicate error
-                self.isLoadingFavorites = false
-                self.fetchedFavorites = [] // Clear previously fetched items on error
-            }
+            self.favoritesError = true // Indicate error
+            self.isLoadingFavorites = false
+            self.fetchedFavorites = [] // Clear previously fetched items on error
             return
         }
 
-        // Set loading state on main actor before async operation
-        await MainActor.run {
-            self.isLoadingFavorites = true
-            self.favoritesError = false
-        }
+        self.isLoadingFavorites = true
+        self.favoritesError = false
 
         do {
-            let (data, _) = try await URLSession.shared.data(from: url)
+            let (data, response) = try await URLSession.shared.data(from: url)
+            try SonosHTTP.validate(response)
             let serverFavoriteNames = try JSONDecoder().decode([String].self, from: data) // Names from server
             // Also update the edited config's lastKnownServerFavorites
             // This ensures that if new favorites were added on the server, we save them.
             let serverFavoriteStations = serverFavoriteNames.map { Station(name: $0, url: $0, type: .favorite) }
             editedConfig.lastKnownServerFavorites = serverFavoriteStations.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 
-            await MainActor.run {
-                self.fetchedFavorites = serverFavoriteNames.sorted() // Update the list used to RENDER the toggles.
-                self.isLoadingFavorites = false
-                self.favoritesError = false
+            self.fetchedFavorites = serverFavoriteNames.sorted() // Update the list used to RENDER the toggles.
+            self.isLoadingFavorites = false
+            self.favoritesError = false
 
-                Task { await self.fetchLineInSources() }
-            }
+            await fetchLineInSources()
         } catch {
-            await MainActor.run {
-                self.favoritesError = true
-                self.isLoadingFavorites = false
-                self.fetchedFavorites = [] // Clear fetched items on error
-                 Self.logger.error("Error fetching favorites: \(error)")
-            }
+            self.favoritesError = true
+            self.isLoadingFavorites = false
+            self.fetchedFavorites = [] // Clear fetched items on error
+            Self.logger.error("Error fetching favorites: \(error)")
         }
     }
     
     private func fetchLineInSources() async {
         guard let currentFullBaseURL = constructedFullBaseURL, // Use the computed property for base URL
               let url = URL(string: "\(currentFullBaseURL)/zones") else {
-            await MainActor.run {
-                self.lineInSourcesError = "Invalid Base URL for Sonos API."
-                self.isLoadingLineInSources = false
-                self.potentialLineInSources = []
-            }
+            self.lineInSourcesError = "Invalid Base URL for Sonos API."
+            self.isLoadingLineInSources = false
+            self.potentialLineInSources = []
             return
         }
 
-        await MainActor.run {
-            self.isLoadingLineInSources = true
-            self.lineInSourcesError = nil
-        }
+        self.isLoadingLineInSources = true
+        self.lineInSourcesError = nil
 
         do {
             let (data, response) = try await URLSession.shared.data(from: url)
@@ -494,18 +430,14 @@ struct NetworkEditModal: View {
             }.sorted { $0.disambiguatedName.localizedCaseInsensitiveCompare($1.disambiguatedName) == .orderedAscending }
 
 
-            await MainActor.run {
-                self.potentialLineInSources = finalPotentialSources
-                self.isLoadingLineInSources = false
-            }
+            self.potentialLineInSources = finalPotentialSources
+            self.isLoadingLineInSources = false
 
         } catch {
-            await MainActor.run {
-                self.lineInSourcesError = error.localizedDescription
-                self.isLoadingLineInSources = false
-                self.potentialLineInSources = []
-                Self.logger.error("Error fetching potential Line-In sources: \(error)")
-            }
+            self.lineInSourcesError = error.localizedDescription
+            self.isLoadingLineInSources = false
+            self.potentialLineInSources = []
+            Self.logger.error("Error fetching potential Line-In sources: \(error)")
         }
     }
     

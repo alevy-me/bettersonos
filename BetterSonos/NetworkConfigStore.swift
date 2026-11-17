@@ -114,43 +114,38 @@ class NetworkConfigStore: ObservableObject {
             do {
                 let cloudConfigs = try JSONDecoder().decode([NetworkConfig].self, from: iCloudData)
 
-                // Perform an intelligent merge instead of a simple replacement
+                // Merge rather than replace: per config, the more recently modified copy wins.
                 DispatchQueue.main.async {
                     let localConfigs = self.configs
                     var mergedConfigs: [NetworkConfig] = []
                     var cloudConfigMap = Dictionary(cloudConfigs.map { ($0.id, $0) }, uniquingKeysWith: { (first, _) in first })
+                    var localWon = false
 
-                    // 1. Iterate through local configs to handle modifications and deletions
+                    // 1. Configs present locally: keep the newer copy. Configs missing from the cloud
+                    //    were deleted on another device, so they are dropped.
                     for local in localConfigs {
-                        if let cloudVersion = cloudConfigMap[local.id] {
-                            // MODIFY CASE: The config exists in both local and cloud.
-                            // We take the one that was modified more recently.
-                            if local.lastModified > cloudVersion.lastModified {
-                                // Local is newer, keep it.
-                                mergedConfigs.append(local)
-                            } else {
-                                // Cloud is newer or same, take cloud.
-                                mergedConfigs.append(cloudVersion)
-                            }
-                            // Remove from cloud map to mark it as processed
-                            cloudConfigMap.removeValue(forKey: local.id)
+                        guard let cloudVersion = cloudConfigMap.removeValue(forKey: local.id) else { continue }
+                        if local.lastModified > cloudVersion.lastModified {
+                            mergedConfigs.append(local)
+                            localWon = true
+                        } else {
+                            mergedConfigs.append(cloudVersion)
                         }
-                        // DELETE CASE: If local config is not in cloud map, it was deleted elsewhere.
-                        // By not adding it to mergedConfigs, we are deleting it locally.
                     }
 
-                    // 2. ADD CASE: Add any remaining configs from the cloud map.
-                    // These are new configs created on another device.
-                    mergedConfigs.append(contentsOf: cloudConfigMap.values)
+                    // 2. Configs created on another device, in the cloud's order.
+                    mergedConfigs.append(contentsOf: cloudConfigs.filter { cloudConfigMap.removeValue(forKey: $0.id) != nil })
 
                     self.configs = mergedConfigs
 
-                    // Also update UserDefaults to keep it as a local cache of the iCloud version.
-                    if let mergedData = try? JSONEncoder().encode(mergedConfigs) {
+                    if localWon {
+                        // Push the newer local copies back, so the other devices converge on them.
+                        self.save()
+                    } else if let mergedData = try? JSONEncoder().encode(mergedConfigs) {
                         UserDefaults.standard.set(mergedData, forKey: Self.key)
                     }
 
-                    NetworkConfigStore.logger.info("Intelligently merged configurations from iCloud. Total: \(mergedConfigs.count)")
+                    NetworkConfigStore.logger.info("Merged configurations from iCloud. Total: \(mergedConfigs.count), local won: \(localWon)")
                 }
             } catch {
                 NetworkConfigStore.logger.info("Error decoding configurations from iCloud after notification: \(error). Attempting to load from local UserDefaults.")

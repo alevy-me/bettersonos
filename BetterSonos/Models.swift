@@ -24,17 +24,61 @@ import os.log
 
 enum Constants {
     static let defaultCSVURL = "https://raw.githubusercontent.com/alevy-me/sonos/refs/heads/main/default-stations.csv"
-    static let sonosUPnPPort = 1400
     static let stationsPerPage = 6
     static let stationsPerRow = 3
     static let pollInterval: TimeInterval = 60
+    /// Idle timeout for the SSE stream. A timeout means "quiet", not "broken", and is not counted as a failure.
     static let sseTimeout: TimeInterval = 300
+    /// Consecutive failures to establish the SSE stream before the UI reports the live connection as lost.
     static let maxRetryAttempts = 5
+    /// Upper bound on the SSE reconnect backoff, in seconds.
+    static let maxReconnectDelay: TimeInterval = 60
+    /// Minimum interval between automatic retries of an incomplete station list.
+    static let stationRetryInterval: TimeInterval = 60
+}
+
+// MARK: - URL Input Helpers
+
+/// Shared helpers for the scheme picker plus address field pattern used in the settings screens.
+enum URLInput {
+    static func split(_ fullURL: String?, defaultScheme: String) -> (scheme: String, address: String) {
+        guard let urlString = fullURL?.trimmingCharacters(in: .whitespacesAndNewlines), !urlString.isEmpty else {
+            return (defaultScheme, "")
+        }
+        let lower = urlString.lowercased()
+        if lower.hasPrefix("http://") {
+            return ("http://", String(urlString.dropFirst("http://".count)))
+        } else if lower.hasPrefix("https://") {
+            return ("https://", String(urlString.dropFirst("https://".count)))
+        }
+        return (defaultScheme, urlString)
+    }
+
+    /// Joins a scheme and address. Returns nil for an empty address. If the address already carries
+    /// an http(s) scheme (a pasted full URL), the address is used as is.
+    static func join(scheme: String, address: String) -> String? {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        let lower = trimmed.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") {
+            return trimmed
+        }
+        return scheme + trimmed
+    }
+
+    /// Trims whitespace and trailing slashes so request paths never start with "//".
+    static func normalizedBaseURL(_ url: String) -> String {
+        var result = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.hasSuffix("/") {
+            result.removeLast()
+        }
+        return result
+    }
 }
 
 // MARK: - Network Configuration
 
-struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
+struct NetworkConfig: Codable, Identifiable, Hashable {
     let id: UUID
     var displayName: String
     var baseURL: String
@@ -46,7 +90,7 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
     var lineInCustomNames: [String: String] = [:] // UUID: Custom Name
     var manuallyDisabledVolumeUUIDs: Set<String> = []
     var lastModified: Date
-    
+
     enum CodingKeys: String, CodingKey {
         case id, displayName, baseURL, enabled
         case showDefaultPresetsForThisNetwork
@@ -88,19 +132,12 @@ struct NetworkConfig: Codable, Identifiable, Equatable, Hashable {
         lastModified = try container.decodeIfPresent(Date.self, forKey: .lastModified) ?? Date()
         manuallyDisabledVolumeUUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .manuallyDisabledVolumeUUIDs) ?? []
     }
-    
-    static func == (lhs: NetworkConfig, rhs: NetworkConfig) -> Bool {
-        lhs.id == rhs.id &&
-        lhs.displayName == rhs.displayName &&
-        lhs.baseURL == rhs.baseURL &&
-        lhs.enabled == rhs.enabled &&
-        lhs.showDefaultPresetsForThisNetwork == rhs.showDefaultPresetsForThisNetwork &&
-        lhs.explicitlyDisabledFavoriteURLs == rhs.explicitlyDisabledFavoriteURLs &&
-        lhs.lastKnownServerFavorites == rhs.lastKnownServerFavorites &&
-        lhs.enabledLineInUUIDs == rhs.enabledLineInUUIDs &&
-        lhs.lineInCustomNames == rhs.lineInCustomNames &&
-        lhs.lastModified == rhs.lastModified &&
-        lhs.manuallyDisabledVolumeUUIDs == rhs.manuallyDisabledVolumeUUIDs
+
+    /// True when the station list for this network would otherwise be empty, which forces the default presets on.
+    static func isForcedDefault(remoteCSVURL: String?, manualStations: [Station], favorites: [Station]?, disabledFavoriteURLs: Set<String>) -> Bool {
+        let customCSVEmpty = (remoteCSVURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
+        let enabledFavorites = (favorites ?? []).filter { !disabledFavoriteURLs.contains($0.url) }
+        return customCSVEmpty && manualStations.isEmpty && enabledFavorites.isEmpty
     }
 }
 
@@ -114,17 +151,40 @@ enum NetworkStatus: Equatable {
 
 // MARK: - Models
 
-enum StationType: String, Codable, Hashable {
+/// Station type. Unknown raw values are preserved in `.other` so a type written by a newer
+/// build round-trips through this build (and through iCloud) unchanged. `.other` plays as a stream.
+enum StationType: Hashable, Codable, RawRepresentable {
     case stream
     case favorite
-    case lineIn = "linein"
-    case defaultCSVStream = "default_csv_stream"
-    case customCSVStream = "custom_csv_stream"
+    case lineIn
+    case other(String)
+
+    init(rawValue: String) {
+        switch rawValue.lowercased() {
+        case "stream": self = .stream
+        case "favorite": self = .favorite
+        case "linein": self = .lineIn
+        default: self = .other(rawValue)
+        }
+    }
+
+    var rawValue: String {
+        switch self {
+        case .stream: return "stream"
+        case .favorite: return "favorite"
+        case .lineIn: return "linein"
+        case .other(let raw): return raw
+        }
+    }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
-        let raw = try container.decode(String.self)
-        self = StationType(rawValue: raw.lowercased()) ?? .stream
+        self.init(rawValue: try container.decode(String.self))
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
     }
 }
 
@@ -135,49 +195,77 @@ struct Station: Hashable, Codable {
 
     var isFavorite: Bool { type == .favorite }
     var isLineIn: Bool { type == .lineIn }
-    func matches(track: Track) -> Bool {
-        let normalizedName = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedURL = url.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
-        if let stationName = track.stationName?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines),
-           track.uri?.hasPrefix("x-sonosapi-stream:") == true {
-            if stationName == normalizedName {
-                return true
-            }
-            if stationName.contains(normalizedName) || normalizedName.contains(stationName) {
-                return true
-            }
-        }
-        let candidateURLs = [
-            track.uri,
-            track.trackUri
-        ].compactMap { $0?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) }
-        if candidateURLs.contains(where: { $0.contains(normalizedURL) }) {
-            return true
-        }
-        if isLineIn { // self.isLineIn is true. self.url is "x-rincon-stream:CONFIGURED_BARE_UUID"
-                    for candidateTrackURI in candidateURLs { // candidateTrackURI is from track.uri, e.g., "x-rincon-stream:PLAYING_BARE_UUID"
-                        if candidateTrackURI.hasPrefix("x-rincon-stream:") {
-                            // Extract the bare UUID from the currently playing track's URI
-                            let playingTrackBareUUID = candidateTrackURI
-                                .replacingOccurrences(of: "x-rincon-stream:", with: "")
-                                .components(separatedBy: ":")
-                                .first ?? ""
 
-                            // Extract the bare UUID from this Station instance's URL
-                            let stationBareUUID = self.url // self.url is "x-rincon-stream:CONFIGURED_BARE_UUID" for LineIn stations
-                                .replacingOccurrences(of: "x-rincon-stream:", with: "")
-                                .components(separatedBy: ":")
-                                .first ?? ""
+    /// How well this station matches the playing track. 0 means no match; higher is better.
+    /// 4: exact URI or line-in UUID match. 3: exact station name match.
+    /// 2: the track URI contains this station's URL. 1: substring name match on a TuneIn stream.
+    func matchScore(for track: Track) -> Int {
+        let normalizedName = Self.normalize(name)
+        let normalizedURL = Self.normalize(url)
+        let candidateURIs = [track.uri, track.trackUri]
+            .compactMap { $0.map(Self.normalize) }
+            .filter { !$0.isEmpty }
 
-                            // If both bare UUIDs match and are not empty, it's a match
-                            if !playingTrackBareUUID.isEmpty && playingTrackBareUUID == stationBareUUID {
-                                return true
-                            }
-                        }
-                    }
-                }
-        return false
+        if isLineIn {
+            guard let stationUUID = Self.lineInUUID(from: normalizedURL) else { return 0 }
+            return candidateURIs.contains { Self.lineInUUID(from: $0) == stationUUID } ? 4 : 0
+        }
+
+        if !normalizedURL.isEmpty,
+           candidateURIs.contains(where: { $0 == normalizedURL || $0 == "x-rincon-mp3radio://" + normalizedURL }) {
+            return 4
+        }
+
+        let stationName = track.stationName.map(Self.normalize) ?? ""
+        if !normalizedName.isEmpty, stationName == normalizedName {
+            return 3
+        }
+
+        // Only URL-shaped values are used for containment, so a short or malformed url field
+        // (for example "stream") cannot match every track.
+        if normalizedURL.count >= 8, normalizedURL.contains(":"),
+           candidateURIs.contains(where: { $0.contains(normalizedURL) }) {
+            return 2
+        }
+
+        if !normalizedName.isEmpty, !stationName.isEmpty,
+           track.uri?.hasPrefix("x-sonosapi-stream:") == true,
+           stationName.contains(normalizedName) || normalizedName.contains(stationName) {
+            return 1
+        }
+        return 0
     }
+
+    private static func normalize(_ value: String) -> String {
+        value.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Extracts the lowercased UUID from "x-rincon-stream:UUID" or "x-rincon-stream:UUID:INSTANCE".
+    static func lineInUUID(from uri: String) -> String? {
+        let lower = uri.lowercased()
+        let prefix = "x-rincon-stream:"
+        guard lower.hasPrefix(prefix) else { return nil }
+        let uuid = lower.dropFirst(prefix.count).split(separator: ":").first.map(String.init) ?? ""
+        return uuid.isEmpty ? nil : uuid
+    }
+}
+
+/// Picks the best-matching station for a track. Ties on score keep list order, except that among
+/// substring name matches the longest (closest) name wins.
+func bestMatchingStation(in stations: [Station], for track: Track) -> Station? {
+    var best: (station: Station, score: Int)? = nil
+    for station in stations {
+        let score = station.matchScore(for: track)
+        guard score > 0 else { continue }
+        if let current = best {
+            if score > current.score || (score == 1 && current.score == 1 && station.name.count > current.station.name.count) {
+                best = (station, score)
+            }
+        } else {
+            best = (station, score)
+        }
+    }
+    return best?.station
 }
 
 struct SonosGroup: Identifiable, Hashable {
@@ -190,9 +278,8 @@ struct Member: Codable {
     let roomName: String
     let uuid: String
     let state: PlayerState
-    let host: String?
 }
-struct Track: Codable {
+struct Track: Codable, Equatable {
     let title: String?
     let artist: String?
     let stationName: String?
@@ -209,9 +296,83 @@ struct PlayerState: Codable {
     let playbackState: String
 }
 
+// MARK: - Station CSV Parsing
+
+enum StationCSV {
+    /// Parses a station CSV (header row, then name,url[,type]). Handles RFC 4180 quoting, escaped
+    /// quotes, empty fields, a UTF-8 BOM, and LF, CRLF or CR line endings. Rows without a name and
+    /// a URL are skipped. An empty or missing type means "stream".
+    static func parseStations(_ data: Data) -> [Station] {
+        let text = String(decoding: data, as: UTF8.self)
+        return parseRows(text).dropFirst().compactMap { fields in
+            let trimmed = fields.map { $0.trimmingCharacters(in: .whitespaces) }
+            guard trimmed.count >= 2, !trimmed[0].isEmpty, !trimmed[1].isEmpty else { return nil }
+            let rawType = trimmed.count >= 3 && !trimmed[2].isEmpty ? trimmed[2] : "stream"
+            return Station(name: trimmed[0], url: trimmed[1], type: StationType(rawValue: rawType))
+        }
+    }
+
+    static func parseRows(_ text: String) -> [[String]] {
+        var scalars = Array(text.unicodeScalars)
+        if scalars.first == "\u{FEFF}" { scalars.removeFirst() }
+
+        var rows: [[String]] = []
+        var row: [String] = []
+        var field = String.UnicodeScalarView()
+        var inQuotes = false
+        var fieldStarted = false
+        var i = 0
+
+        func endField() {
+            row.append(String(field))
+            field = String.UnicodeScalarView()
+            fieldStarted = false
+        }
+
+        while i < scalars.count {
+            let c = scalars[i]
+            if inQuotes {
+                if c == "\"" {
+                    if i + 1 < scalars.count, scalars[i + 1] == "\"" {
+                        field.append("\"")
+                        i += 1
+                    } else {
+                        inQuotes = false
+                    }
+                } else {
+                    field.append(c)
+                }
+            } else {
+                switch c {
+                case "\"" where !fieldStarted:
+                    inQuotes = true
+                    fieldStarted = true
+                case ",":
+                    endField()
+                case "\r", "\n":
+                    endField()
+                    rows.append(row)
+                    row = []
+                    if c == "\r", i + 1 < scalars.count, scalars[i + 1] == "\n" { i += 1 }
+                default:
+                    if c != " " && c != "\t" { fieldStarted = true }
+                    field.append(c)
+                }
+            }
+            i += 1
+        }
+        if fieldStarted || !field.isEmpty || !row.isEmpty {
+            endField()
+            rows.append(row)
+        }
+        // Drop blank lines.
+        return rows.filter { !($0.count == 1 && $0[0].trimmingCharacters(in: .whitespaces).isEmpty) }
+    }
+}
+
 // MARK: - Redirect Handler
 
-class RedirectHandler: NSObject, URLSessionDelegate, URLSessionTaskDelegate {
+final class RedirectHandler: NSObject, URLSessionTaskDelegate {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "RedirectHandler")
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,

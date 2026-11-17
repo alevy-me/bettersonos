@@ -37,8 +37,8 @@ struct NetworkSettingsModal: View {
                 networkConfigsSection
                 csvSection
                 manualStationsSection
-                }
             }
+            // Title and toolbar must be attached inside the NavigationView to render.
             .navigationTitle("Settings")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -48,45 +48,38 @@ struct NetworkSettingsModal: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button {
-                        selectedConfig = NetworkConfig(
-                            id: UUID(),
-                            displayName: "",
-                            baseURL: "",
-                            enabled: true,
-                            showDefaultPresetsForThisNetwork: true, // Default for a brand new config
-                            explicitlyDisabledFavoriteURLs: [],
-                            lastKnownServerFavorites: nil
-                         )
+                        selectedConfig = Self.newConfig()
                     } label: {
                         Image(systemName: "plus")
                     }
+                    .accessibilityLabel("Add Network")
                 }
             }
-            .sheet(item: $selectedConfig) { config in
-                NetworkEditModal(
-                    initialConfig: config,
-                    isEditing: networkStore.configs.contains(where: { $0.id == config.id }),
-                    onSave: { newConfig in
-                        if let i = networkStore.configs.firstIndex(where: { $0.id == newConfig.id }) {
-                            networkStore.configs[i] = newConfig
-                        } else {
-                            networkStore.add(newConfig)
-                        }
-                        networkStore.save()
-                        selectedConfig = nil
-                    },
-                    onCancel: {
-                        selectedConfig = nil
-                    },
-                    onDelete: {
-                        if let i = networkStore.configs.firstIndex(where: { $0.id == config.id }) {
-                            networkStore.remove(networkStore.configs[i])
-                        }
-                        selectedConfig = nil
+        }
+        .sheet(item: $selectedConfig) { config in
+            NetworkEditModal(
+                initialConfig: config,
+                isEditing: networkStore.configs.contains(where: { $0.id == config.id }),
+                onSave: { newConfig in
+                    // update() stamps lastModified, which the iCloud merge relies on.
+                    if networkStore.configs.contains(where: { $0.id == newConfig.id }) {
+                        networkStore.update(newConfig)
+                    } else {
+                        networkStore.add(newConfig)
                     }
-                )
-            }
-        
+                    selectedConfig = nil
+                },
+                onCancel: {
+                    selectedConfig = nil
+                },
+                onDelete: {
+                    if let i = networkStore.configs.firstIndex(where: { $0.id == config.id }) {
+                        networkStore.remove(networkStore.configs[i])
+                    }
+                    selectedConfig = nil
+                }
+            )
+        }
     }
 
     private var csvSection: some View {
@@ -203,9 +196,9 @@ struct NetworkSettingsModal: View {
                     Toggle(isOn: Binding(
                         get: { config.enabled },
                         set: { newValue in
-                            if let i = networkStore.configs.firstIndex(where: { $0.id == config.id }) {
-                                networkStore.configs[i].enabled = newValue
-                                networkStore.save()
+                            if var updated = networkStore.configs.first(where: { $0.id == config.id }) {
+                                updated.enabled = newValue
+                                networkStore.update(updated)
                             }
                         }
                     )) {
@@ -227,43 +220,27 @@ struct NetworkSettingsModal: View {
                     
                 }
             }
-            Button {
-                    selectedConfig = NetworkConfig(
-                        id: UUID(),
-                        displayName: "",
-                        baseURL: "",
-                        enabled: true,
-                        showDefaultPresetsForThisNetwork: true, // Default for a brand new config
-                        explicitlyDisabledFavoriteURLs: [],
-                        lastKnownServerFavorites: nil
-                     )
-                } label: {
-                    Text("Add Network") // Changed from Image(systemName: "plus")
-                }
+            Button("Add Network") {
+                selectedConfig = Self.newConfig()
+            }
         }
     }
     
-    // Helper functions (can be placed in an extension or locally)
+    private static func newConfig() -> NetworkConfig {
+        NetworkConfig(
+            id: UUID(),
+            displayName: "",
+            baseURL: "",
+            enabled: true,
+            showDefaultPresetsForThisNetwork: true // Default for a brand new config
+        )
+    }
+
     private func splitURL(_ fullURL: String?) -> (scheme: String, address: String) {
-        guard let urlString = fullURL, !urlString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-            return ("https://", "") // Default scheme if URL is nil or empty
-        }
-        if urlString.lowercased().hasPrefix("http://") {
-            return ("http://", String(urlString.dropFirst("http://".count)))
-        } else if urlString.lowercased().hasPrefix("https://") {
-            return ("https://", String(urlString.dropFirst("https://".count)))
-        } else {
-            // If no recognizable scheme, assume it's the address part and default to https
-            return ("https://", urlString)
-        }
+        URLInput.split(fullURL, defaultScheme: "https://")
     }
 
     private func joinURL(scheme: String, address: String) -> String? {
-        let trimmedAddress = address.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedAddress.isEmpty {
-            return nil // If the address part is empty, consider the full URL nil (or empty)
-        }
-        return scheme + trimmedAddress
+        URLInput.join(scheme: scheme, address: address)
     }
-    
 }

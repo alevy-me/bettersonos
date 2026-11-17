@@ -20,7 +20,7 @@
 import SwiftUI
 import os.log
 
-// MARK: - Subviews (your originals, unchanged, below...)
+// MARK: - Network Subviews
 
 struct GroupedRoomsListView: View {
     @ObservedObject var viewModel: SonosViewModel
@@ -35,7 +35,8 @@ struct GroupedRoomsListView: View {
                     SonosGroupView(
                         group: group,
                         viewModel: viewModel,
-                        config:config,
+                        config: config,
+                        stations: filteredStations,
                         onInitiateJoinForSpeaker: { specificSpeakerName in // This closure receives the actual speaker
                             self.joinSourceRoom = specificSpeakerName // Set the specific speaker as the source
                             self.showingJoinDialog = true
@@ -65,13 +66,15 @@ struct GroupedRoomsListView: View {
 struct SonosGroupView: View {
     let group: SonosGroup
     let config: NetworkConfig
+    let stations: [Station]
     @ObservedObject var viewModel: SonosViewModel
     let onInitiateJoinForSpeaker: (String) -> Void // Closure that takes the specific speaker's name
     @State private var isExpanded: Bool
 
-    init(group: SonosGroup, viewModel: SonosViewModel, config: NetworkConfig, onInitiateJoinForSpeaker: @escaping (String) -> Void) {
+    init(group: SonosGroup, viewModel: SonosViewModel, config: NetworkConfig, stations: [Station], onInitiateJoinForSpeaker: @escaping (String) -> Void) {
         self.group = group
         self.config = config
+        self.stations = stations
         self._viewModel = ObservedObject(wrappedValue: viewModel)
         self.onInitiateJoinForSpeaker = onInitiateJoinForSpeaker
         self._isExpanded = State(initialValue: viewModel.isAccordionExpanded(for: group.coordinator))
@@ -90,7 +93,7 @@ struct SonosGroupView: View {
                 isPlaying: viewModel.isPlaying(group: group),
                 stationName: viewModel.stationDisplay(for: group.coordinator),
                 isVolumeDisabled: viewModel.volumeDisabled[group.coordinator] ?? false,
-                stations: viewModel.filteredStations(for: config),
+                stations: stations,
                 onAdjust: { d in viewModel.adjustVolume(room: group.coordinator, delta: d) },
                 onToggleMute: { viewModel.toggleMute(room: group.coordinator) },
                 onTogglePlay: { viewModel.togglePlayback(group: group) },
@@ -115,7 +118,7 @@ struct SonosGroupView: View {
                     isPlaying: false,
                     stationName: nil,
                     isVolumeDisabled: viewModel.volumeDisabled[room] ?? false,
-                    stations: viewModel.filteredStations(for: config),
+                    stations: [], // Joiners show no presets
                     onAdjust: { d in viewModel.adjustVolume(room: room, delta: d) },
                     onToggleMute: { viewModel.toggleMute(room: room) },
                     onTogglePlay: nil,
@@ -135,7 +138,6 @@ struct SonosGroupView: View {
 
 struct StationPresetAccordion: View {
     private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "StationPresetAccordion")
-    let stations: [Station]
     let selectedStation: Station?
     let onSelect: (Station) -> Void
     @Binding var isExpanded: Bool
@@ -153,29 +155,31 @@ struct StationPresetAccordion: View {
         onExpansionChanged: ((Bool) -> Void)? = nil,
         stationDisplay: String
     ) {
-        self.stations = stations
         self.selectedStation = selectedStation
         self.onSelect = onSelect
         self._isExpanded = isExpanded
         self.stationDisplay = stationDisplay
         self.onExpansionChanged = onExpansionChanged
 
-        self.pages = stride(from: 0, to: stations.count, by: Constants.stationsPerPage).map { start in
-            let slice = Array(stations[start..<min(start + Constants.stationsPerPage, stations.count)])
+        let pages = Self.paginate(stations)
+        self.pages = pages
+        // Only the first seed is used for the view's lifetime; later selection changes are handled by onChange below.
+        _currentPage = State(initialValue: Self.pageIndex(of: selectedStation, in: pages) ?? 0)
+    }
+
+    /// Pages of 2 rows by 3 buttons.
+    private static func paginate(_ list: [Station]) -> [[[Station]]] {
+        stride(from: 0, to: list.count, by: Constants.stationsPerPage).map { start in
+            let slice = Array(list[start..<min(start + Constants.stationsPerPage, list.count)])
             return stride(from: 0, to: slice.count, by: Constants.stationsPerRow).map { rowStart in
                 Array(slice[rowStart..<min(rowStart + Constants.stationsPerRow, slice.count)])
             }
         }
+    }
 
-        if let selected = selectedStation {
-            if let index = pages.firstIndex(where: { $0.flatMap { $0 }.contains(selected) }) {
-                _currentPage = State(initialValue: index)
-            } else {
-                _currentPage = State(initialValue: 0)
-            }
-        } else {
-            _currentPage = State(initialValue: 0)
-        }
+    private static func pageIndex(of station: Station?, in pages: [[[Station]]]) -> Int? {
+        guard let station else { return nil }
+        return pages.firstIndex { $0.joined().contains(station) }
     }
     
     var body: some View {
@@ -251,14 +255,15 @@ struct StationPresetAccordion: View {
                 .cornerRadius(8)
             }
         }
-    }
-    
-    // Break into pages of 2 rows × 3 buttons = 6 per page
-    func pagedStations(_ list: [Station]) -> [[[Station]]] {
-        stride(from: 0, to: list.count, by: Constants.stationsPerPage).map { start in
-            let slice = Array(list[start..<min(start + Constants.stationsPerPage, list.count)])
-            return stride(from: 0, to: slice.count, by: Constants.stationsPerRow).map { rowStart in
-                Array(slice[rowStart..<min(rowStart + Constants.stationsPerRow, slice.count)])
+        .onChange(of: selectedStation) { _, newValue in
+            if let index = Self.pageIndex(of: newValue, in: pages) {
+                currentPage = index
+            }
+        }
+        .onChange(of: pages.count) { _, count in
+            // Keep the TabView selection pointing at a page that exists.
+            if currentPage >= count {
+                currentPage = max(0, count - 1)
             }
         }
     }
@@ -366,26 +371,6 @@ struct RoomRowView: View {
     }
 }
 
-struct VolumeStepper: View {
-    let room: String
-    let volume: Int
-    let isMuted: Bool
-    let onAdjust: (Int) -> Void
-    let onToggleMute: () -> Void
-
-    var body: some View {
-        HStack(spacing: 12) {
-            Button { onAdjust(-5) } label: { Image(systemName: "minus.square") }
-            Text("\(volume)%").frame(width: 40)
-            Button { onAdjust(5) } label: { Image(systemName: "plus.square") }
-            Button { onToggleMute() } label: {
-                Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-            }
-        }
-        .font(.title2)
-    }
-}
-
 struct GroupControlButton: View {
     let isJoinable: Bool
     let isLeavable: Bool
@@ -409,27 +394,8 @@ struct GroupControlButton: View {
     }
 }
 
-struct RoomControlRow: View {
-    let roomName: String
-    let volume: Int
-    let isMuted: Bool
-    let onAdjust: (Int) -> Void
-    let onToggleMute: () -> Void
-
-    var body: some View {
-        HStack {
-            Text(roomName)
-            Spacer()
-            VolumeStepper(room: roomName, volume: volume,
-                          isMuted: isMuted, onAdjust: onAdjust,
-                          onToggleMute: onToggleMute)
-        }
-    }
-}
-
 // MARK: - Button Style Helper
 
-// After: Using adaptive system colors
 extension View {
     func styledControlButton(disabled: Bool) -> some View {
         self

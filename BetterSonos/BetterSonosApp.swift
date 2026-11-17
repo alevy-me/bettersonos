@@ -141,7 +141,9 @@ struct BetterSonosView: View {
                         networkStore: networkStore,
                         settingsStore: settingsStore
                     )
-                    .id(config) // This forces a full recreation of the view when the config changes
+                    // Keyed by identity and server address only. The view model observes its own config,
+                    // so edits and favorites merges no longer tear down the row and its state.
+                    .id("\(config.id.uuidString)|\(config.baseURL)")
                 }
             }
             .padding(.horizontal)
@@ -162,6 +164,7 @@ struct NetworkAccordionView: View {
     init(config: NetworkConfig, networkStore: NetworkConfigStore, settingsStore: AppSettingsStore) {
         self.config = config
         self._viewModel = StateObject(wrappedValue: SonosViewModel(
+            configID: config.id,
             baseURL: config.baseURL,
             networkStore: networkStore,
             settingsStore: settingsStore
@@ -200,7 +203,6 @@ struct NetworkAccordionView: View {
                 }
             }
             if isExpanded {
-                // The GroupedRoomsListView now gets its dependencies from the viewModel and config
                 GroupedRoomsListView(
                     viewModel: viewModel,
                     filteredStations: viewModel.filteredStations(for: config),
@@ -213,4 +215,6 @@ struct NetworkAccordionView: View {
 
 #Preview {
     BetterSonosView()
+        .environmentObject(NetworkConfigStore())
+        .environmentObject(AppSettingsStore.shared)
 }

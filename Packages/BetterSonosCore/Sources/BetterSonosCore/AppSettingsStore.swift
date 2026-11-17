@@ -22,19 +22,23 @@ import Foundation
 import Combine
 
 @MainActor
-final class AppSettingsStore: ObservableObject {
-    static let shared = AppSettingsStore()
+public final class AppSettingsStore: ObservableObject {
+    /// The iOS app's store, which reads and writes iCloud.
+    public static let shared = AppSettingsStore()
+
+    /// When true, local edits are never written to iCloud. The watch uses this.
+    public let isCloudReadOnly: Bool
 
     private let iCloud = NSUbiquitousKeyValueStore.default
     private var cancellables = Set<AnyCancellable>()
 
     // MARK: - Published Settings
 
-    @Published var manualStations: [Station] = []
-    @Published var remoteCSVURL: String? = nil
+    @Published public var manualStations: [Station] = []
+    @Published public var remoteCSVURL: String? = nil
 
     // Transient state (not persisted)
-    @Published var csvLoadError: Bool = false
+    @Published public var csvLoadError: Bool = false
 
     // MARK: - Keys
 
@@ -43,10 +47,13 @@ final class AppSettingsStore: ObservableObject {
         static let remoteCSVURL = "remoteCSVURL"
     }
 
-    private init() {
+    public init(cloudReadOnly: Bool = false) {
+        self.isCloudReadOnly = cloudReadOnly
         syncFromStore()
         observeCloudUpdates()
-        observeLocalChanges()
+        if !cloudReadOnly {
+            observeLocalChanges()
+        }
         iCloud.synchronize()
     }
 

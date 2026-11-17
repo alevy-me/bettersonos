@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		7ACB0C0E2E00000000000001 /* BetterSonosCore in Frameworks */ = {isa = PBXBuildFile; productRef = 7ACB0C0E2E00000000000002 /* BetterSonosCore */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		7A59FBCA2DB2ACDF00F7AD7E /* BetterSonos.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BetterSonos.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -36,6 +40,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				7ACB0C0E2E00000000000001 /* BetterSonosCore in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -78,6 +83,7 @@
 			);
 			name = BetterSonos;
 			packageProductDependencies = (
+				7ACB0C0E2E00000000000002 /* BetterSonosCore */,
 			);
 			productName = BetterSonos;
 			productReference = 7A59FBCA2DB2ACDF00F7AD7E /* BetterSonos.app */;
@@ -107,6 +113,9 @@
 			);
 			mainGroup = 7A59FBC12DB2ACDF00F7AD7E;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				7ACB0C0E2E00000000000003 /* XCLocalSwiftPackageReference "Packages/BetterSonosCore" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 7A59FBCB2DB2ACDF00F7AD7E /* Products */;
 			projectDirPath = "";
@@ -358,6 +367,20 @@
 			defaultConfigurationName = Release;
 		};
 /* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		7ACB0C0E2E00000000000003 /* XCLocalSwiftPackageReference "Packages/BetterSonosCore" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/BetterSonosCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		7ACB0C0E2E00000000000002 /* BetterSonosCore */ = {
+			isa = XCSwiftPackageProductDependency;
+			productName = BetterSonosCore;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = 7A59FBC22DB2ACDF00F7AD7E /* Project object */;
 }

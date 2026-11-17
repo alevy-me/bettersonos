@@ -18,6 +18,7 @@
 //
 
 import SwiftUI
+import BetterSonosCore
 
 struct NetworkSettingsModal: View {
     @EnvironmentObject var networkStore: NetworkConfigStore

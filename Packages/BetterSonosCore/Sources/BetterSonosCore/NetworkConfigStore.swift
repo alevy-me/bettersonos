@@ -23,10 +23,14 @@ import os.log
 
 // MARK: - UserDefaults Storage
 
-class NetworkConfigStore: ObservableObject {
-    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "NetworkConfigStore")
-    @Published var configs: [NetworkConfig] = []
-    
+public final class NetworkConfigStore: ObservableObject {
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterSonosCore", category: "NetworkConfigStore")
+    @Published public var configs: [NetworkConfig] = []
+
+    /// When true, this store never writes to iCloud. The watch uses this so a stale copy can never
+    /// overwrite configs edited on the phone. Local UserDefaults caching still happens.
+    public let isCloudReadOnly: Bool
+
     static let key = "sonosNetworkConfigs"
     
     private static let iCloudKey = "sonosNetworkConfigs_iCloud" // Distinct key for iCloud
@@ -35,7 +39,8 @@ class NetworkConfigStore: ObservableObject {
     }
     private var cancellables = Set<AnyCancellable>() // For observing iCloud changes
     
-    init() {
+    public init(cloudReadOnly: Bool = false) {
+        self.isCloudReadOnly = cloudReadOnly
         // Initial load prioritizes iCloud, then UserDefaults
         load()
 
@@ -57,7 +62,7 @@ class NetworkConfigStore: ObservableObject {
         // This can help ensure local changes are pushed or remote changes are pulled sooner.
         ubiquitousStore.synchronize()    }
     
-    func load() {
+    public func load() {
         // Try to load from iCloud first.
         // If iCloud has data, it's considered more authoritative.
         if let iCloudData = ubiquitousStore.data(forKey: Self.iCloudKey) {
@@ -85,7 +90,7 @@ class NetworkConfigStore: ObservableObject {
                     
                 NetworkConfigStore.logger.info("Loaded configurations from UserDefaults. Will attempt to sync to iCloud if empty there.")
                 // If iCloud was empty but local wasn't, let's try to push local to iCloud.
-                if ubiquitousStore.data(forKey: Self.iCloudKey) == nil {
+                if !isCloudReadOnly, ubiquitousStore.data(forKey: Self.iCloudKey) == nil {
                     do {
                         let encoded = try JSONEncoder().encode(self.configs)
                         ubiquitousStore.set(encoded, forKey: Self.iCloudKey)
@@ -182,11 +187,13 @@ class NetworkConfigStore: ObservableObject {
         }
     }
     
-    func save() {
+    public func save() {
         do {
             let encoded = try JSONEncoder().encode(configs)
             // Save to UserDefaults (local cache)
             UserDefaults.standard.set(encoded, forKey: Self.key)
+
+            guard !isCloudReadOnly else { return }
 
             // Save to iCloud
             ubiquitousStore.set(encoded, forKey: Self.iCloudKey)
@@ -203,12 +210,12 @@ class NetworkConfigStore: ObservableObject {
         }
     }
     
-    func add(_ config: NetworkConfig) {
+    public func add(_ config: NetworkConfig) {
         configs.append(config)
         save()
     }
     
-    func update(_ config: NetworkConfig) {
+    public func update(_ config: NetworkConfig) {
         if let idx = configs.firstIndex(where: { $0.id == config.id }) {
             // By creating a mutable copy and re-assigning it, we force @Published to notify its subscribers.
             var updatedConfig = config
@@ -222,12 +229,12 @@ class NetworkConfigStore: ObservableObject {
         }
     }
     
-    func remove(_ config: NetworkConfig) {
+    public func remove(_ config: NetworkConfig) {
         configs.removeAll { $0.id == config.id }
         save()
     }
     
-    func mergeFavorites(for configID: UUID, newFavoritesFromServer: [Station]) {
+    public func mergeFavorites(for configID: UUID, newFavoritesFromServer: [Station]) {
         guard let idx = configs.firstIndex(where: { $0.id == configID }) else { return }
         var currentConfig = configs[idx]
 

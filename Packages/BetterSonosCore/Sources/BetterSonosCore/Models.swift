@@ -22,26 +22,26 @@ import os.log
 
 // MARK: - Constants
 
-enum Constants {
-    static let defaultCSVURL = "https://raw.githubusercontent.com/alevy-me/sonos/refs/heads/main/default-stations.csv"
-    static let stationsPerPage = 6
-    static let stationsPerRow = 3
-    static let pollInterval: TimeInterval = 60
+public enum Constants {
+    public static let defaultCSVURL = "https://raw.githubusercontent.com/alevy-me/sonos/refs/heads/main/default-stations.csv"
+    public static let stationsPerPage = 6
+    public static let stationsPerRow = 3
+    public static let pollInterval: TimeInterval = 60
     /// Idle timeout for the SSE stream. A timeout means "quiet", not "broken", and is not counted as a failure.
-    static let sseTimeout: TimeInterval = 300
+    public static let sseTimeout: TimeInterval = 300
     /// Consecutive failures to establish the SSE stream before the UI reports the live connection as lost.
-    static let maxRetryAttempts = 5
+    public static let maxRetryAttempts = 5
     /// Upper bound on the SSE reconnect backoff, in seconds.
-    static let maxReconnectDelay: TimeInterval = 60
+    public static let maxReconnectDelay: TimeInterval = 60
     /// Minimum interval between automatic retries of an incomplete station list.
-    static let stationRetryInterval: TimeInterval = 60
+    public static let stationRetryInterval: TimeInterval = 60
 }
 
 // MARK: - URL Input Helpers
 
 /// Shared helpers for the scheme picker plus address field pattern used in the settings screens.
-enum URLInput {
-    static func split(_ fullURL: String?, defaultScheme: String) -> (scheme: String, address: String) {
+public enum URLInput {
+    public static func split(_ fullURL: String?, defaultScheme: String) -> (scheme: String, address: String) {
         guard let urlString = fullURL?.trimmingCharacters(in: .whitespacesAndNewlines), !urlString.isEmpty else {
             return (defaultScheme, "")
         }
@@ -56,7 +56,7 @@ enum URLInput {
 
     /// Joins a scheme and address. Returns nil for an empty address. If the address already carries
     /// an http(s) scheme (a pasted full URL), the address is used as is.
-    static func join(scheme: String, address: String) -> String? {
+    public static func join(scheme: String, address: String) -> String? {
         let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         let lower = trimmed.lowercased()
@@ -67,7 +67,7 @@ enum URLInput {
     }
 
     /// Trims whitespace and trailing slashes so request paths never start with "//".
-    static func normalizedBaseURL(_ url: String) -> String {
+    public static func normalizedBaseURL(_ url: String) -> String {
         var result = url.trimmingCharacters(in: .whitespacesAndNewlines)
         while result.hasSuffix("/") {
             result.removeLast()
@@ -78,18 +78,18 @@ enum URLInput {
 
 // MARK: - Network Configuration
 
-struct NetworkConfig: Codable, Identifiable, Hashable {
-    let id: UUID
-    var displayName: String
-    var baseURL: String
-    var enabled: Bool
-    var showDefaultPresetsForThisNetwork: Bool
-    var explicitlyDisabledFavoriteURLs: Set<String> = []
-    var lastKnownServerFavorites: [Station]? = nil
-    var enabledLineInUUIDs: Set<String> = []
-    var lineInCustomNames: [String: String] = [:] // UUID: Custom Name
-    var manuallyDisabledVolumeUUIDs: Set<String> = []
-    var lastModified: Date
+public struct NetworkConfig: Codable, Identifiable, Hashable {
+    public let id: UUID
+    public var displayName: String
+    public var baseURL: String
+    public var enabled: Bool
+    public var showDefaultPresetsForThisNetwork: Bool
+    public var explicitlyDisabledFavoriteURLs: Set<String> = []
+    public var lastKnownServerFavorites: [Station]? = nil
+    public var enabledLineInUUIDs: Set<String> = []
+    public var lineInCustomNames: [String: String] = [:] // UUID: Custom Name
+    public var manuallyDisabledVolumeUUIDs: Set<String> = []
+    public var lastModified: Date
 
     enum CodingKeys: String, CodingKey {
         case id, displayName, baseURL, enabled
@@ -102,7 +102,7 @@ struct NetworkConfig: Codable, Identifiable, Hashable {
         case manuallyDisabledVolumeUUIDs
     }
 
-    init(id: UUID, displayName: String, baseURL: String, enabled: Bool, showDefaultPresetsForThisNetwork: Bool, explicitlyDisabledFavoriteURLs: Set<String> = [], lastKnownServerFavorites: [Station]? = nil, enabledLineInUUIDs: Set<String> = [], lineInCustomNames: [String: String] = [:], manuallyDisabledVolumeUUIDs: Set<String> = [], lastModified: Date = Date()) {
+    public init(id: UUID, displayName: String, baseURL: String, enabled: Bool, showDefaultPresetsForThisNetwork: Bool, explicitlyDisabledFavoriteURLs: Set<String> = [], lastKnownServerFavorites: [Station]? = nil, enabledLineInUUIDs: Set<String> = [], lineInCustomNames: [String: String] = [:], manuallyDisabledVolumeUUIDs: Set<String> = [], lastModified: Date = Date()) {
         self.id = id
         self.displayName = displayName
         self.baseURL = baseURL
@@ -116,7 +116,7 @@ struct NetworkConfig: Codable, Identifiable, Hashable {
         self.lastModified = lastModified
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         displayName = try container.decode(String.self, forKey: .displayName)
@@ -134,7 +134,7 @@ struct NetworkConfig: Codable, Identifiable, Hashable {
     }
 
     /// True when the station list for this network would otherwise be empty, which forces the default presets on.
-    static func isForcedDefault(remoteCSVURL: String?, manualStations: [Station], favorites: [Station]?, disabledFavoriteURLs: Set<String>) -> Bool {
+    public static func isForcedDefault(remoteCSVURL: String?, manualStations: [Station], favorites: [Station]?, disabledFavoriteURLs: Set<String>) -> Bool {
         let customCSVEmpty = (remoteCSVURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
         let enabledFavorites = (favorites ?? []).filter { !disabledFavoriteURLs.contains($0.url) }
         return customCSVEmpty && manualStations.isEmpty && enabledFavorites.isEmpty
@@ -143,7 +143,7 @@ struct NetworkConfig: Codable, Identifiable, Hashable {
 
 // MARK: - Network Status Enum
 
-enum NetworkStatus: Equatable {
+public enum NetworkStatus: Equatable {
     case connected
     case connecting
     case error(String)
@@ -153,13 +153,13 @@ enum NetworkStatus: Equatable {
 
 /// Station type. Unknown raw values are preserved in `.other` so a type written by a newer
 /// build round-trips through this build (and through iCloud) unchanged. `.other` plays as a stream.
-enum StationType: Hashable, Codable, RawRepresentable {
+public enum StationType: Hashable, Codable, RawRepresentable {
     case stream
     case favorite
     case lineIn
     case other(String)
 
-    init(rawValue: String) {
+    public init(rawValue: String) {
         switch rawValue.lowercased() {
         case "stream": self = .stream
         case "favorite": self = .favorite
@@ -168,7 +168,7 @@ enum StationType: Hashable, Codable, RawRepresentable {
         }
     }
 
-    var rawValue: String {
+    public var rawValue: String {
         switch self {
         case .stream: return "stream"
         case .favorite: return "favorite"
@@ -177,29 +177,35 @@ enum StationType: Hashable, Codable, RawRepresentable {
         }
     }
 
-    init(from decoder: Decoder) throws {
+    public init(from decoder: Decoder) throws {
         let container = try decoder.singleValueContainer()
         self.init(rawValue: try container.decode(String.self))
     }
 
-    func encode(to encoder: Encoder) throws {
+    public func encode(to encoder: Encoder) throws {
         var container = encoder.singleValueContainer()
         try container.encode(rawValue)
     }
 }
 
-struct Station: Hashable, Codable {
-    let name: String
-    let url: String
-    let type: StationType
+public struct Station: Hashable, Codable {
+    public let name: String
+    public let url: String
+    public let type: StationType
 
-    var isFavorite: Bool { type == .favorite }
-    var isLineIn: Bool { type == .lineIn }
+    public init(name: String, url: String, type: StationType) {
+        self.name = name
+        self.url = url
+        self.type = type
+    }
+
+    public var isFavorite: Bool { type == .favorite }
+    public var isLineIn: Bool { type == .lineIn }
 
     /// How well this station matches the playing track. 0 means no match; higher is better.
     /// 4: exact URI or line-in UUID match. 3: exact station name match.
     /// 2: the track URI contains this station's URL. 1: substring name match on a TuneIn stream.
-    func matchScore(for track: Track) -> Int {
+    public func matchScore(for track: Track) -> Int {
         let normalizedName = Self.normalize(name)
         let normalizedURL = Self.normalize(url)
         let candidateURIs = [track.uri, track.trackUri]
@@ -241,7 +247,7 @@ struct Station: Hashable, Codable {
     }
 
     /// Extracts the lowercased UUID from "x-rincon-stream:UUID" or "x-rincon-stream:UUID:INSTANCE".
-    static func lineInUUID(from uri: String) -> String? {
+    public static func lineInUUID(from uri: String) -> String? {
         let lower = uri.lowercased()
         let prefix = "x-rincon-stream:"
         guard lower.hasPrefix(prefix) else { return nil }
@@ -252,7 +258,7 @@ struct Station: Hashable, Codable {
 
 /// Picks the best-matching station for a track. Ties on score keep list order, except that among
 /// substring name matches the longest (closest) name wins.
-func bestMatchingStation(in stations: [Station], for track: Track) -> Station? {
+public func bestMatchingStation(in stations: [Station], for track: Track) -> Station? {
     var best: (station: Station, score: Int)? = nil
     for station in stations {
         let score = station.matchScore(for: track)
@@ -268,41 +274,64 @@ func bestMatchingStation(in stations: [Station], for track: Track) -> Station? {
     return best?.station
 }
 
-struct SonosGroup: Identifiable, Hashable {
-    var id: String { coordinator }
-    let coordinator: String
-    let joiners: [String]
+public struct SonosGroup: Identifiable, Hashable {
+    public var id: String { coordinator }
+    public let coordinator: String
+    public let joiners: [String]
+
+    public init(coordinator: String, joiners: [String]) {
+        self.coordinator = coordinator
+        self.joiners = joiners
+    }
 }
-struct Zone: Codable { let coordinator: Member; let members: [Member] }
-struct Member: Codable {
-    let roomName: String
-    let uuid: String
-    let state: PlayerState
+
+public struct Zone: Codable {
+    public let coordinator: Member
+    public let members: [Member]
 }
-struct Track: Codable, Equatable {
-    let title: String?
-    let artist: String?
-    let stationName: String?
-    let uri: String?
-    let trackUri: String?
-    let type: String?
-    let albumArtUri: String?
-    let absoluteAlbumArtUri: String?
+
+public struct Member: Codable {
+    public let roomName: String
+    public let uuid: String
+    public let state: PlayerState
 }
-struct PlayerState: Codable {
-    let volume: Int
-    let mute: Bool
-    let currentTrack: Track?
-    let playbackState: String
+
+public struct Track: Codable, Equatable {
+    public let title: String?
+    public let artist: String?
+    public let stationName: String?
+    public let uri: String?
+    public let trackUri: String?
+    public let type: String?
+    public let albumArtUri: String?
+    public let absoluteAlbumArtUri: String?
+
+    public init(title: String? = nil, artist: String? = nil, stationName: String? = nil, uri: String? = nil, trackUri: String? = nil, type: String? = nil, albumArtUri: String? = nil, absoluteAlbumArtUri: String? = nil) {
+        self.title = title
+        self.artist = artist
+        self.stationName = stationName
+        self.uri = uri
+        self.trackUri = trackUri
+        self.type = type
+        self.albumArtUri = albumArtUri
+        self.absoluteAlbumArtUri = absoluteAlbumArtUri
+    }
+}
+
+public struct PlayerState: Codable {
+    public let volume: Int
+    public let mute: Bool
+    public let currentTrack: Track?
+    public let playbackState: String
 }
 
 // MARK: - Station CSV Parsing
 
-enum StationCSV {
+public enum StationCSV {
     /// Parses a station CSV (header row, then name,url[,type]). Handles RFC 4180 quoting, escaped
     /// quotes, empty fields, a UTF-8 BOM, and LF, CRLF or CR line endings. Rows without a name and
     /// a URL are skipped. An empty or missing type means "stream".
-    static func parseStations(_ data: Data) -> [Station] {
+    public static func parseStations(_ data: Data) -> [Station] {
         let text = String(decoding: data, as: UTF8.self)
         return parseRows(text).dropFirst().compactMap { fields in
             let trimmed = fields.map { $0.trimmingCharacters(in: .whitespaces) }
@@ -312,7 +341,7 @@ enum StationCSV {
         }
     }
 
-    static func parseRows(_ text: String) -> [[String]] {
+    public static func parseRows(_ text: String) -> [[String]] {
         var scalars = Array(text.unicodeScalars)
         if scalars.first == "\u{FEFF}" { scalars.removeFirst() }
 
@@ -373,7 +402,7 @@ enum StationCSV {
 // MARK: - Redirect Handler
 
 final class RedirectHandler: NSObject, URLSessionTaskDelegate {
-    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier!, category: "RedirectHandler")
+    private static let logger = Logger(subsystem: Bundle.main.bundleIdentifier ?? "BetterSonosCore", category: "RedirectHandler")
     func urlSession(_ session: URLSession,
                     task: URLSessionTask,
                     willPerformHTTPRedirection response: HTTPURLResponse,

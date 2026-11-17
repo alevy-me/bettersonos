@@ -18,6 +18,7 @@
 //
 
 import SwiftUI
+import BetterSonosCore
 import Foundation
 import os.log
 

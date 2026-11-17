@@ -1,0 +1,38 @@
+# Throwaway watchOS app to test whether Apple Watch can reach node-sonos-http-api directly.
+# Generate the project with: xcodegen generate
+name: WatchNetTest
+options:
+  bundleIdPrefix: show.nola
+  deploymentTarget:
+    watchOS: "10.0"
+settings:
+  base:
+    DEVELOPMENT_TEAM: 9J857XHJMC
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+targets:
+  WatchNetTest:
+    type: application
+    platform: watchOS
+    sources: [WatchNetTest]
+    entitlements:
+      path: WatchNetTest/WatchNetTest.entitlements
+      properties:
+        # Same key-value store as the iOS app, so synced network configs are visible here.
+        com.apple.developer.ubiquity-kvstore-identifier: $(TeamIdentifierPrefix)show.nola.BetterSonos
+    info:
+      path: WatchNetTest/Info.plist
+      properties:
+        CFBundleDisplayName: Sonos Net Test
+        WKApplication: true
+        WKWatchOnly: true
+        # Match the iOS app. Adding NSAllowsLocalNetworking would make the system ignore NSAllowsArbitraryLoads.
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        NSLocalNetworkUsageDescription: Tests whether the watch can reach your node-sonos-http-api server.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: show.nola.BetterSonos.nettest
+        DEVELOPMENT_TEAM: 9J857XHJMC

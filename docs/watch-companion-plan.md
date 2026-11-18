@@ -8,7 +8,7 @@ Out of scope: grouping and ungrouping, network settings, line-in setup, custom C
 
 ## What the network test established
 
-Tested on a Series 11 against `192.168.1.13`, `home.example.com` and `second.example.com`, with `WatchNetTest/`.
+Tested on a Series 11 against two node-sonos-http-api servers, by LAN address and by public hostname, with `WatchNetTest/`.
 
 | Finding | Evidence | Consequence |
 |---|---|---|
@@ -16,10 +16,10 @@ Tested on a Series 11 against `192.168.1.13`, `home.example.com` and `second.exa
 | It also works through the iPhone | 600 to 850 ms per request, phone nearby | Volume needs local-first handling (below) |
 | With the phone nearby, the watch routes through it even with its own Wi-Fi on | Runs 1 and 2 identical | Expect the slow path most of the time at home |
 | Configs sync through iCloud key-value storage | "2 config(s)" on every run, store `9J857XHJMC.show.nola.BetterSonos` | No setup on the watch |
-| ATS must be `NSAllowsArbitraryLoads` alone | `NSAllowsLocalNetworking` made the system ignore it and block the public hosts (URLError -1022) | Copy the iOS app's Info.plist setting exactly |
+| ATS must be `NSAllowsArbitraryLoads` alone | `NSAllowsLocalNetworking` made the system ignore it and block plain HTTP to public hostnames (URLError -1022) | Copy the iOS app's Info.plist setting exactly |
 | `NWPathMonitor` is wrong on watchOS | Reported "down" on every run while every request succeeded | Never gate a request on path status |
 | The first request after a network change is slow | 5.7 s and 9.1 s internet checks right after switching | Timeout around 10 s; show progress, not an error, for the first few seconds |
-| The config hostnames are public IPs behind a port forward | `203.0.113.10`, `203.0.113.20` | Works away from home whenever the watch has internet |
+| The config hostnames are public IPs behind a port forward | Both servers' hostnames resolve to public addresses | Works away from home whenever the watch has internet |
 
 ## Architecture
 

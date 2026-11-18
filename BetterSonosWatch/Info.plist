@@ -15,7 +15,7 @@
 		</dict>
 	</array>
 	<!-- Same as the iOS app. Do not add NSAllowsLocalNetworking: it makes the system ignore
-	     NSAllowsArbitraryLoads and blocks plain HTTP to hostnames such as home.example.com. -->
+	     NSAllowsArbitraryLoads and blocks plain HTTP to public hostnames such as a port-forwarded server. -->
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

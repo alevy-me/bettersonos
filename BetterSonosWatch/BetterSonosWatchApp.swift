@@ -42,6 +42,8 @@ struct BetterSonosWatchApp: App {
 final class WatchModel: ObservableObject {
     /// Reads the iOS app's configs from iCloud and never writes back.
     let store = NetworkConfigStore(cloudReadOnly: true)
+    /// Manual stations and the custom CSV URL, for presets. Read-only, like the configs.
+    let settings = AppSettingsStore(cloudReadOnly: true)
 
     private var controllers: [UUID: WatchNetworkController] = [:]
     private var isActive = true

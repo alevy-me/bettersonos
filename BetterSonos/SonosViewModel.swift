@@ -252,9 +252,7 @@ final class SonosViewModel: ObservableObject {
     // MARK: - Stations
 
     func filteredStations(for config: NetworkConfig) -> [Station] {
-        remoteStations.filter { station in
-            !(station.isFavorite && config.explicitlyDisabledFavoriteURLs.contains(station.url))
-        }
+        StationListBuilder.visibleStations(remoteStations, for: config)
     }
 
     private func scheduleStationRebuild() {
@@ -374,14 +372,7 @@ final class SonosViewModel: ObservableObject {
 
     @discardableResult
     private func sendStreamURL(to room: String, station: Station) async -> Bool {
-        let url: URL?
-        if station.isFavorite {
-            url = apiURL(room, "favorite", station.url)
-        } else if station.isLineIn {
-            url = apiURL(room, "setavtransporturi", station.url)
-        } else {
-            url = apiURL(room, "setavtransporturi", "x-rincon-mp3radio://\(station.url)")
-        }
+        let url = SonosHTTP.presetURL(base: baseURL, room: room, station: station)
         log.debug("Sending \(station.name, privacy: .public) to \(room, privacy: .public)")
         return await SonosHTTP.get(url)
     }

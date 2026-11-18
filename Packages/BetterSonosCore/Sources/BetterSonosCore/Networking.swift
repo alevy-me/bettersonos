@@ -39,6 +39,18 @@ public enum SonosHTTP {
         return URL(string: path)
     }
 
+    /// The request that loads a preset into a room: favorites by name, line-ins by their
+    /// x-rincon-stream URI, and everything else as an x-rincon-mp3radio stream.
+    /// Follow it with `<room>/play`.
+    public static func presetURL(base: String, room: String, station: Station) -> URL? {
+        if station.isFavorite {
+            return url(base: base, [room, "favorite", station.url])
+        } else if station.isLineIn {
+            return url(base: base, [room, "setavtransporturi", station.url])
+        }
+        return url(base: base, [room, "setavtransporturi", "x-rincon-mp3radio://\(station.url)"])
+    }
+
     public enum RequestError: Error {
         case badStatus(Int)
         case notHTTP
@@ -124,6 +136,12 @@ public enum StationListBuilder {
             log.error("Failed to fetch stations from \(url, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return nil
         }
+    }
+
+    /// The stations to offer for a network: the built list minus favorites disabled for it.
+    /// (The build keeps disabled favorites so the forced-default rule counts them correctly.)
+    public static func visibleStations(_ stations: [Station], for config: NetworkConfig) -> [Station] {
+        stations.filter { !($0.isFavorite && config.explicitlyDisabledFavoriteURLs.contains($0.url)) }
     }
 
     /// Merges every station source into one deduplicated, name-sorted list. Lower priority wins on a URL clash:

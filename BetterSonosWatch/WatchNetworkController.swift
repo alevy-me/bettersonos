@@ -37,6 +37,8 @@ struct RoomState: Identifiable, Equatable {
     var isGroupMuted: Bool
     var isPlaying: Bool
     let nowPlaying: String?
+    /// The group's current track, for matching the playing preset.
+    let track: Track?
     /// Matches the iOS app's grayed-out volume controls.
     let isVolumeDisabled: Bool
     /// Group volume is disabled only when every member's volume is.
@@ -60,6 +62,10 @@ final class WatchNetworkController: ObservableObject {
     @Published private(set) var rooms: [RoomState] = []
     @Published private(set) var hasLoaded = false
     @Published private(set) var errorMessage: String?
+    /// Visible presets for this network, cached on the watch so the list appears instantly.
+    @Published private(set) var presets: [Station] = []
+    @Published private(set) var isLoadingPresets = false
+    @Published private(set) var presetsError: String?
 
     let configID: UUID
     let baseURL: String
@@ -89,6 +95,7 @@ final class WatchNetworkController: ObservableObject {
         self.configID = config.id
         self.baseURL = URLInput.normalizedBaseURL(config.baseURL)
         self.config = config
+        self.presets = Self.loadCachedPresets(for: config.id)
     }
 
     /// Applies a newer synced copy of this network's config.
@@ -231,6 +238,7 @@ final class WatchNetworkController: ObservableObject {
                     isGroupMuted: groupMuted,
                     isPlaying: isPlaying,
                     nowPlaying: nowPlaying,
+                    track: coordinator.state.currentTrack,
                     isVolumeDisabled: config.isVolumeDisabled(forPlayer: member.uuid),
                     isGroupVolumeDisabled: groupVolumeDisabled
                 ))
@@ -330,6 +338,81 @@ final class WatchNetworkController: ObservableObject {
             await self.refresh()
         }
     }
+
+    // MARK: - Presets
+
+    private static func presetsCacheKey(for id: UUID) -> String { "watchPresets_\(id.uuidString)" }
+
+    private static func loadCachedPresets(for id: UUID) -> [Station] {
+        guard let data = UserDefaults.standard.data(forKey: presetsCacheKey(for: id)) else { return [] }
+        return (try? JSONDecoder().decode([Station].self, from: data)) ?? []
+    }
+
+    /// Rebuilds the preset list with the same sources and rules as the iOS app, keeping the cached
+    /// list on screen meanwhile. A failed build never replaces a good cached list.
+    func loadPresets(settings: AppSettingsStore) async {
+        guard !isLoadingPresets else { return }
+        isLoadingPresets = true
+        defer { isLoadingPresets = false }
+
+        var uuidToRoomName: [String: String] = [:]
+        for zone in lastZones {
+            for member in [zone.coordinator] + zone.members where uuidToRoomName[member.uuid] == nil {
+                uuidToRoomName[member.uuid] = member.roomName
+            }
+        }
+        let inputs = StationListInputs(
+            config: config,
+            remoteCSVURL: settings.remoteCSVURL,
+            manualStations: settings.manualStations,
+            uuidToRoomName: uuidToRoomName
+        )
+        let result = await StationListBuilder.build(inputs)
+        let visible = StationListBuilder.visibleStations(result.stations, for: config)
+
+        if visible.isEmpty && result.incomplete {
+            presetsError = presets.isEmpty ? "Couldn't load presets." : "Couldn't refresh presets."
+            return
+        }
+        presetsError = nil
+        if presets != visible { presets = visible }
+        if let data = try? JSONEncoder().encode(visible) {
+            UserDefaults.standard.set(data, forKey: Self.presetsCacheKey(for: configID))
+        }
+    }
+
+    /// The preset playing in this room's group, matched the same way as the iOS app.
+    func playingPreset(forRoom name: String) -> Station? {
+        guard let room = room(named: name), room.isPlaying, let track = room.track else { return nil }
+        return bestMatchingStation(in: presets, for: track)
+    }
+
+    /// Loads a preset into the room's group and plays it.
+    func playPreset(_ station: Station, inRoom name: String) {
+        guard let room = room(named: name) else { return }
+        let coordinator = room.coordinator
+        pendingPlaying[coordinator] = Pending(value: true)
+        publishRooms()
+
+        let loadURL = SonosHTTP.presetURL(base: baseURL, room: coordinator, station: station)
+        let playURL = SonosHTTP.url(base: baseURL, [coordinator, "play"])
+        Task { [weak self] in
+            let loaded = await SonosHTTP.get(loadURL)
+            let ok = await SonosHTTP.get(playURL) && loaded
+            guard let self else { return }
+            if ok {
+                self.pendingPlaying[coordinator]?.clearAfterGeneration = self.refreshGeneration
+            } else {
+                self.pendingPlaying[coordinator] = nil
+            }
+            await self.refresh()
+            // The new track's metadata can take a moment to appear.
+            try? await Task.sleep(for: .seconds(2))
+            await self.refresh()
+        }
+    }
+
+    // MARK: - Playback
 
     /// Play and pause act on the room's group, through its coordinator.
     func togglePlayback(room name: String) {

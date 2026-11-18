@@ -23,6 +23,7 @@ import BetterSonosCore
 enum Route: Hashable {
     case network(UUID)
     case room(network: UUID, name: String)
+    case presets(network: UUID, room: String)
 }
 
 // MARK: - Root
@@ -102,6 +103,12 @@ struct RootView: View {
         case .room(let id, let name):
             if let config = model.config(id: id) {
                 RoomView(controller: model.controller(for: config), networkID: id, roomName: name)
+            } else {
+                Text("This network is no longer configured.")
+            }
+        case .presets(let id, let room):
+            if let config = model.config(id: id) {
+                PresetsView(controller: model.controller(for: config), settings: model.settings, roomName: room)
             } else {
                 Text("This network is no longer configured.")
             }
@@ -338,7 +345,90 @@ struct RoomView: View {
                         .foregroundStyle(displayedMute ? .orange : .primary)
                 }
                 .accessibilityLabel(displayedMute ? "Unmute" : "Mute")
+
+                NavigationLink(value: Route.presets(network: networkID, room: room.name)) {
+                    Image(systemName: "list.bullet")
+                        .font(.title3)
+                }
+                .accessibilityLabel("Presets")
             }
         }
+    }
+}
+
+// MARK: - Presets
+
+struct PresetsView: View {
+    @ObservedObject var controller: WatchNetworkController
+    @ObservedObject var settings: AppSettingsStore
+    let roomName: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        let playing = controller.playingPreset(forRoom: roomName)
+        ScrollViewReader { proxy in
+            List {
+                if let error = controller.presetsError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
+                if controller.presets.isEmpty {
+                    if controller.isLoadingPresets {
+                        ProgressView().frame(maxWidth: .infinity)
+                    } else if controller.presetsError == nil {
+                        Text("No presets for this network.")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(controller.presets, id: \.self) { station in
+                    Button {
+                        controller.playPreset(station, inRoom: roomName)
+                        dismiss()
+                    } label: {
+                        PresetRow(station: station, isPlaying: station == playing)
+                    }
+                    .id(station)
+                }
+            }
+            .onAppear {
+                if let playing { proxy.scrollTo(playing, anchor: .center) }
+            }
+        }
+        .navigationTitle("Presets")
+        .task {
+            await controller.loadPresets(settings: settings)
+        }
+    }
+}
+
+private struct PresetRow: View {
+    let station: Station
+    let isPlaying: Bool
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Image(systemName: icon)
+                .foregroundStyle(.secondary)
+                .imageScale(.small)
+                .frame(width: 16)
+            Text(station.name)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+            if isPlaying {
+                Image(systemName: "speaker.wave.2.fill")
+                    .foregroundStyle(.green)
+                    .imageScale(.small)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(isPlaying ? .isSelected : [])
+    }
+
+    private var icon: String {
+        if station.isFavorite { return "star.fill" }
+        if station.isLineIn { return "cable.connector" }
+        return "dot.radiowaves.left.and.right"
     }
 }

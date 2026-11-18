@@ -85,6 +85,15 @@ final class WatchModel: ObservableObject {
         let controller = WatchNetworkController(config: config)
         controllers[config.id] = controller
         if isActive { controller.start() }
+        // Presets are needed to restart a stopped stream, so make sure a list exists before play is tapped.
+        if controller.presets.isEmpty {
+            let settings = self.settings
+            Task { [weak controller] in
+                // Let the first refresh land, so line-in names resolve.
+                try? await Task.sleep(for: .seconds(1))
+                await controller?.loadPresets(settings: settings)
+            }
+        }
         return controller
     }
 

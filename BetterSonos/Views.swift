@@ -223,7 +223,8 @@ struct StationPresetAccordion: View {
                                                     .multilineTextAlignment(.center)
                                                     .lineLimit(2)
                                                     .frame(height: 48)
-                                                    .frame(maxWidth: 0.33 * UIScreen.main.bounds.width)
+                                                    // A third of the page, so a short last row keeps narrow buttons.
+                                                    .containerRelativeFrame(.horizontal, count: 3, spacing: 8)
                                                     .background(
                                                         Capsule().fill(
                                                             station == selectedStation

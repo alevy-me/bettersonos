@@ -182,7 +182,10 @@ final class SonosViewModel: ObservableObject {
         if volumeDisabled != newVolumeDisabled { volumeDisabled = newVolumeDisabled }
 
         let roomNamesChanged = uuidToRoomName != newUUIDToRoomName
-        if roomNamesChanged { uuidToRoomName = newUUIDToRoomName }
+        if roomNamesChanged {
+            uuidToRoomName = newUUIDToRoomName
+            SiriVocabulary.refresh()
+        }
 
         updateSelections()
         loadAccordionStateFromDefaults()
@@ -384,8 +387,10 @@ final class SonosViewModel: ObservableObject {
             if self.playbackState[coordinator] == "PLAYING" {
                 await SonosHTTP.get(self.apiURL(coordinator, "pause"))
             } else {
-                // Resume whatever the transport holds. Only reload the selected preset if there is nothing to resume.
-                let resumed = await SonosHTTP.get(self.apiURL(coordinator, "play"))
+                // Resume whatever the transport holds. A stopped stream (live radio after a pause) or a failed
+                // resume reloads the selected preset instead.
+                let reloadFirst = self.playbackState[coordinator] == "STOPPED" && self.selectedStationByRoom[coordinator] != nil
+                let resumed = reloadFirst ? false : await SonosHTTP.get(self.apiURL(coordinator, "play"))
                 if !resumed, let station = self.selectedStationByRoom[coordinator] {
                     await self.sendStreamURL(to: coordinator, station: station)
                     await SonosHTTP.get(self.apiURL(coordinator, "play"))
@@ -493,9 +498,9 @@ final class SonosViewModel: ObservableObject {
             }
         }
 
-        // 3. Whatever metadata the track has.
-        if let candidate = track.stationName ?? track.artist ?? track.title, !candidate.isEmpty {
-            return label(candidate)
+        // 3. Whatever metadata the track has, cleaned (status codes, file names, repeats; see NowPlaying).
+        if let nowPlaying = NowPlaying(track: track), !nowPlaying.line.isEmpty {
+            return label(nowPlaying.line)
         }
         return "Nothing queued"
     }

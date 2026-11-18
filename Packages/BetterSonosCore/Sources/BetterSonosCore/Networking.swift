@@ -89,7 +89,7 @@ public enum SonosHTTP {
 // MARK: - Station List Builder
 
 /// Snapshot of everything the station list depends on, taken on the main actor.
-public struct StationListInputs {
+public struct StationListInputs: Sendable {
     public let config: NetworkConfig
     public let remoteCSVURL: String?
     public let manualStations: [Station]
@@ -103,7 +103,7 @@ public struct StationListInputs {
     }
 }
 
-public struct StationListResult {
+public struct StationListResult: Sendable {
     public let stations: [Station]
     /// nil when no custom CSV is configured.
     public let customCSVFailed: Bool?

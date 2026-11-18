@@ -36,6 +36,8 @@ struct RoomState: Identifiable, Equatable {
     var groupVolume: Int
     var isGroupMuted: Bool
     var isPlaying: Bool
+    /// True when the group's transport is stopped, as live radio is after a pause.
+    let isStopped: Bool
     let nowPlaying: String?
     /// The group's current track, for matching the playing preset.
     let track: Track?
@@ -221,7 +223,9 @@ final class WatchNetworkController: ObservableObject {
             let groupVolume = pendingVolume[groupTarget]?.value ?? coordinator.groupState?.volume ?? coordinator.state.volume
             let groupMuted = pendingMute[groupTarget]?.value ?? coordinator.groupState?.mute ?? coordinator.state.mute
             let isPlaying = pendingPlaying[coordinator.roomName]?.value ?? serverPlaying
-            let nowPlaying = Self.describe(coordinator.state.currentTrack)
+            let track = coordinator.state.currentTrack
+            let presetName = track.flatMap { bestMatchingStation(in: presets, for: $0)?.name }
+            let nowPlaying = NowPlaying(track: track, presetName: presetName)?.line
 
             var seen = Set<String>()
             let players = ([coordinator] + zone.members).filter { seen.insert($0.roomName).inserted }
@@ -237,6 +241,7 @@ final class WatchNetworkController: ObservableObject {
                     groupVolume: groupVolume,
                     isGroupMuted: groupMuted,
                     isPlaying: isPlaying,
+                    isStopped: coordinator.state.isStopped,
                     nowPlaying: nowPlaying,
                     track: coordinator.state.currentTrack,
                     isVolumeDisabled: config.isVolumeDisabled(forPlayer: member.uuid),
@@ -245,23 +250,9 @@ final class WatchNetworkController: ObservableObject {
             }
         }
         result.sort { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let namesChanged = rooms.map(\.name) != result.map(\.name)
         if rooms != result { rooms = result }
-    }
-
-    static func describe(_ track: Track?) -> String? {
-        guard let track else { return nil }
-        if let uri = track.uri ?? track.trackUri, uri.hasPrefix("x-rincon-stream:") {
-            return "Line In"
-        }
-        let title = track.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let artist = track.artist?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        let station = track.stationName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        switch (title.isEmpty, artist.isEmpty) {
-        case (false, false): return "\(title) · \(artist)"
-        case (false, true): return title
-        case (true, false): return artist
-        case (true, true): return station.isEmpty ? nil : station
-        }
+        if namesChanged { SiriVocabulary.refresh() }
     }
 
     // MARK: - Actions
@@ -383,7 +374,13 @@ final class WatchNetworkController: ObservableObject {
 
     /// The preset playing in this room's group, matched the same way as the iOS app.
     func playingPreset(forRoom name: String) -> Station? {
-        guard let room = room(named: name), room.isPlaying, let track = room.track else { return nil }
+        guard let room = room(named: name), room.isPlaying else { return nil }
+        return matchedPreset(forRoom: name)
+    }
+
+    /// The preset matching whatever the room's group holds, playing or not.
+    func matchedPreset(forRoom name: String) -> Station? {
+        guard let track = room(named: name)?.track else { return nil }
         return bestMatchingStation(in: presets, for: track)
     }
 
@@ -419,6 +416,13 @@ final class WatchNetworkController: ObservableObject {
         guard let room = room(named: name) else { return }
         let coordinator = room.coordinator
         let play = !room.isPlaying
+
+        // A stopped stream (live radio after a pause) restarts by reloading its preset.
+        if play, room.isStopped, let preset = matchedPreset(forRoom: name) {
+            playPreset(preset, inRoom: name)
+            return
+        }
+
         pendingPlaying[coordinator] = Pending(value: play)
         publishRooms()
 
@@ -435,6 +439,11 @@ final class WatchNetworkController: ObservableObject {
             // Transport state can lag the command (TRANSITIONING, then PLAYING), so check again shortly.
             try? await Task.sleep(for: .seconds(2))
             await self.refresh()
+
+            // If play was accepted but nothing started, reload the matching preset as a fallback.
+            if play, self.room(named: name)?.isPlaying == false, let preset = self.matchedPreset(forRoom: name) {
+                self.playPreset(preset, inRoom: name)
+            }
         }
     }
 }

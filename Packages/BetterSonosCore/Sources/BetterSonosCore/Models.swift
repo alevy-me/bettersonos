@@ -82,7 +82,7 @@ public enum URLInput {
 
 // MARK: - Network Configuration
 
-public struct NetworkConfig: Codable, Identifiable, Hashable {
+public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public var displayName: String
     public var baseURL: String
@@ -153,7 +153,7 @@ public struct NetworkConfig: Codable, Identifiable, Hashable {
 
 // MARK: - Network Status Enum
 
-public enum NetworkStatus: Equatable {
+public enum NetworkStatus: Equatable, Sendable {
     case connected
     case connecting
     case error(String)
@@ -163,7 +163,7 @@ public enum NetworkStatus: Equatable {
 
 /// Station type. Unknown raw values are preserved in `.other` so a type written by a newer
 /// build round-trips through this build (and through iCloud) unchanged. `.other` plays as a stream.
-public enum StationType: Hashable, Codable, RawRepresentable {
+public enum StationType: Hashable, Codable, RawRepresentable, Sendable {
     case stream
     case favorite
     case lineIn
@@ -198,7 +198,7 @@ public enum StationType: Hashable, Codable, RawRepresentable {
     }
 }
 
-public struct Station: Hashable, Codable {
+public struct Station: Hashable, Codable, Sendable {
     public let name: String
     public let url: String
     public let type: StationType
@@ -284,7 +284,7 @@ public func bestMatchingStation(in stations: [Station], for track: Track) -> Sta
     return best?.station
 }
 
-public struct SonosGroup: Identifiable, Hashable {
+public struct SonosGroup: Identifiable, Hashable, Sendable {
     public var id: String { coordinator }
     public let coordinator: String
     public let joiners: [String]
@@ -295,12 +295,12 @@ public struct SonosGroup: Identifiable, Hashable {
     }
 }
 
-public struct Zone: Codable {
+public struct Zone: Codable, Sendable {
     public let coordinator: Member
     public let members: [Member]
 }
 
-public struct Member: Codable {
+public struct Member: Codable, Sendable {
     public let roomName: String
     public let uuid: String
     public let state: PlayerState
@@ -308,12 +308,12 @@ public struct Member: Codable {
     public let groupState: GroupState?
 }
 
-public struct GroupState: Codable, Equatable {
+public struct GroupState: Codable, Equatable, Sendable {
     public let volume: Int
     public let mute: Bool
 }
 
-public struct Track: Codable, Equatable {
+public struct Track: Codable, Equatable, Sendable {
     public let title: String?
     public let artist: String?
     public let stationName: String?
@@ -335,11 +335,14 @@ public struct Track: Codable, Equatable {
     }
 }
 
-public struct PlayerState: Codable {
+public struct PlayerState: Codable, Sendable {
     public let volume: Int
     public let mute: Bool
     public let currentTrack: Track?
     public let playbackState: String
+
+    /// Live radio can't pause on Sonos: "pausing" it stops the transport, and `play` alone may not restart it.
+    public var isStopped: Bool { playbackState == "STOPPED" }
 }
 
 // MARK: - Station CSV Parsing

@@ -44,7 +44,7 @@ struct RootView: View {
                     ContentUnavailableView(
                         "No Networks",
                         systemImage: "hifispeaker.2",
-                        description: Text("Add a network in Better Sonos on your iPhone. It syncs here through iCloud.")
+                        description: Text("Add a network in BonTon on your iPhone. It syncs here through iCloud.")
                     )
                 } else if configs.count == 1 {
                     RoomListView(config: configs[0])

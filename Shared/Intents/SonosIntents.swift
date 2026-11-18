@@ -47,7 +47,7 @@ struct PauseIntent: AppIntent {
             default: throw $room.needsValueError("Which room?")
             }
         }
-        try await SonosDirectory.send(target.url(target.coordinatorName, "pause"))
+        try SonosDirectory.require(await target.backend.pause(coordinator: target.coordinatorName))
         return .result(dialog: "Paused \(target.roomName).")
     }
 }
@@ -69,10 +69,10 @@ struct ResumeIntent: AppIntent {
         if target.coordinator.state.isStopped, let track = target.coordinator.state.currentTrack {
             let presets = await SonosDirectory.presets(for: target.config).map(\.station)
             if let preset = bestMatchingStation(in: presets, for: track) {
-                try await SonosDirectory.send(SonosHTTP.presetURL(base: target.baseURL, room: target.coordinatorName, station: preset))
+                try SonosDirectory.require(await target.backend.loadPreset(preset, coordinator: target.coordinatorName))
             }
         }
-        try await SonosDirectory.send(target.url(target.coordinatorName, "play"))
+        try SonosDirectory.require(await target.backend.play(coordinator: target.coordinatorName))
         return .result(dialog: "Playing \(target.roomName).")
     }
 }
@@ -96,8 +96,8 @@ struct PlayPresetIntent: AppIntent {
             throw SonosIntentError.presetOnOtherNetwork(preset: preset.name, room: room.name)
         }
         let target = try await SonosDirectory.locate(room)
-        try await SonosDirectory.send(SonosHTTP.presetURL(base: target.baseURL, room: target.coordinatorName, station: preset.station))
-        try await SonosDirectory.send(target.url(target.coordinatorName, "play"))
+        try SonosDirectory.require(await target.backend.loadPreset(preset.station, coordinator: target.coordinatorName))
+        try SonosDirectory.require(await target.backend.play(coordinator: target.coordinatorName))
         return .result(dialog: "Playing \(preset.name) in \(target.roomName).")
     }
 }
@@ -146,7 +146,7 @@ private func setVolume(_ located: SonosDirectory.Located, to level: Int) async t
         throw SonosIntentError.fixedVolume(located.roomName)
     }
     let value = max(0, min(100, level))
-    try await SonosDirectory.send(located.url(located.roomName, "volume", "\(value)"))
+    try SonosDirectory.require(await located.backend.setVolume(value, room: located.roomName))
     return value
 }
 
@@ -228,7 +228,7 @@ struct MuteIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let target = try await SonosDirectory.locate(room)
-        try await SonosDirectory.send(target.url(target.roomName, "mute"))
+        try SonosDirectory.require(await target.backend.setMute(true, room: target.roomName))
         return .result(dialog: "Muted \(target.roomName).")
     }
 }
@@ -246,7 +246,7 @@ struct UnmuteIntent: AppIntent {
 
     func perform() async throws -> some IntentResult & ProvidesDialog {
         let target = try await SonosDirectory.locate(room)
-        try await SonosDirectory.send(target.url(target.roomName, "unmute"))
+        try SonosDirectory.require(await target.backend.setMute(false, room: target.roomName))
         return .result(dialog: "Unmuted \(target.roomName).")
     }
 }

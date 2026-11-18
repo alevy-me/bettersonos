@@ -74,6 +74,8 @@ final class WatchNetworkController: ObservableObject {
     /// The latest synced config, for per-speaker settings such as disabled volume.
     private(set) var config: NetworkConfig
 
+    private var backend: any SonosBackend { config.backend }
+
     static let pollInterval: Duration = .seconds(15)
     static let volumeSendDelay: Duration = .milliseconds(300)
 
@@ -179,11 +181,8 @@ final class WatchNetworkController: ObservableObject {
     func refresh() async {
         refreshGeneration += 1
         let generation = refreshGeneration
-        guard let url = URL(string: "\(baseURL)/zones") else {
-            errorMessage = "Invalid server address."
-            return
-        }
-        switch await SonosHTTP.fetchJSON([Zone].self, from: url) {
+        let backend = self.backend
+        switch await Result(asyncCatching: { try await backend.zones() }) {
         case .success(let zones):
             guard generation > appliedGeneration else { return }
             appliedGeneration = generation
@@ -289,12 +288,11 @@ final class WatchNetworkController: ObservableObject {
         volumeTasks[target] = Task { [weak self] in
             try? await Task.sleep(for: Self.volumeSendDelay)
             guard !Task.isCancelled, let self else { return }
-            let url: URL?
+            let ok: Bool
             switch target {
-            case .room(let name): url = SonosHTTP.url(base: self.baseURL, [name, "volume", "\(value)"])
-            case .group(let coordinator): url = SonosHTTP.url(base: self.baseURL, [coordinator, "groupvolume", "\(value)"])
+            case .room(let name): ok = await self.backend.setVolume(value, room: name)
+            case .group(let coordinator): ok = await self.backend.setGroupVolume(value, coordinator: coordinator)
             }
-            let ok = await SonosHTTP.get(url)
             // A newer value set while this was in flight keeps its own override.
             if self.pendingVolume[target]?.value == value {
                 if ok {
@@ -313,13 +311,13 @@ final class WatchNetworkController: ObservableObject {
         pendingMute[target] = Pending(value: newValue)
         publishRooms()
 
-        let url: URL?
-        switch target {
-        case .room(let name): url = SonosHTTP.url(base: baseURL, [name, newValue ? "mute" : "unmute"])
-        case .group(let coordinator): url = SonosHTTP.url(base: baseURL, [coordinator, newValue ? "groupmute" : "groupunmute"])
-        }
+        let backend = self.backend
         Task { [weak self] in
-            let ok = await SonosHTTP.get(url)
+            let ok: Bool
+            switch target {
+            case .room(let name): ok = await backend.setMute(newValue, room: name)
+            case .group(let coordinator): ok = await backend.setGroupMute(newValue, coordinator: coordinator)
+            }
             guard let self else { return }
             if ok {
                 self.pendingMute[target]?.clearAfterGeneration = self.refreshGeneration
@@ -391,11 +389,10 @@ final class WatchNetworkController: ObservableObject {
         pendingPlaying[coordinator] = Pending(value: true)
         publishRooms()
 
-        let loadURL = SonosHTTP.presetURL(base: baseURL, room: coordinator, station: station)
-        let playURL = SonosHTTP.url(base: baseURL, [coordinator, "play"])
+        let backend = self.backend
         Task { [weak self] in
-            let loaded = await SonosHTTP.get(loadURL)
-            let ok = await SonosHTTP.get(playURL) && loaded
+            let loaded = await backend.loadPreset(station, coordinator: coordinator)
+            let ok = await backend.play(coordinator: coordinator) && loaded
             guard let self else { return }
             if ok {
                 self.pendingPlaying[coordinator]?.clearAfterGeneration = self.refreshGeneration
@@ -426,9 +423,9 @@ final class WatchNetworkController: ObservableObject {
         pendingPlaying[coordinator] = Pending(value: play)
         publishRooms()
 
-        let url = SonosHTTP.url(base: baseURL, [coordinator, play ? "play" : "pause"])
+        let backend = self.backend
         Task { [weak self] in
-            let ok = await SonosHTTP.get(url)
+            let ok = play ? await backend.play(coordinator: coordinator) : await backend.pause(coordinator: coordinator)
             guard let self else { return }
             if ok {
                 self.pendingPlaying[coordinator]?.clearAfterGeneration = self.refreshGeneration

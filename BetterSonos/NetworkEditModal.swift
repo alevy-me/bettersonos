@@ -352,8 +352,7 @@ struct NetworkEditModal: View {
     }
     
     func fetchFavoritesIfNeeded() async {
-        guard let currentFullBaseURL = constructedFullBaseURL, // Use the computed property
-                  let url = URL(string: "\(currentFullBaseURL)/favorites") else {
+        guard let currentFullBaseURL = constructedFullBaseURL else {
             self.favoritesError = true // Indicate error
             self.isLoadingFavorites = false
             self.fetchedFavorites = [] // Clear previously fetched items on error
@@ -364,9 +363,8 @@ struct NetworkEditModal: View {
         self.favoritesError = false
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            try SonosHTTP.validate(response)
-            let serverFavoriteNames = try JSONDecoder().decode([String].self, from: data) // Names from server
+            // The address being edited, not the saved config, so this always talks to that server.
+            let serverFavoriteNames = try await ServerBackend(baseURL: currentFullBaseURL).favoriteNames()
             // Also update the edited config's lastKnownServerFavorites
             // This ensures that if new favorites were added on the server, we save them.
             let serverFavoriteStations = serverFavoriteNames.map { Station(name: $0, url: $0, type: .favorite) }
@@ -386,8 +384,7 @@ struct NetworkEditModal: View {
     }
     
     private func fetchLineInSources() async {
-        guard let currentFullBaseURL = constructedFullBaseURL, // Use the computed property for base URL
-              let url = URL(string: "\(currentFullBaseURL)/zones") else {
+        guard let currentFullBaseURL = constructedFullBaseURL else {
             self.lineInSourcesError = "Invalid Base URL for Sonos API."
             self.isLoadingLineInSources = false
             self.potentialLineInSources = []
@@ -398,12 +395,7 @@ struct NetworkEditModal: View {
         self.lineInSourcesError = nil
 
         do {
-            let (data, response) = try await URLSession.shared.data(from: url)
-            guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
-                throw URLError(.badServerResponse) // Or a custom error
-            }
-
-            let zones = try JSONDecoder().decode([Zone].self, from: data) // Assumes Zone struct is defined globally or accessible
+            let zones = try await ServerBackend(baseURL: currentFullBaseURL).zones()
 
             var uniquePlayers: [String: String] = [:] // UUID: roomName
             for zone in zones {

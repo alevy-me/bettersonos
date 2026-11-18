@@ -45,6 +45,8 @@ final class SonosViewModel: ObservableObject {
 
     let configID: UUID
     private let baseURL: String
+    /// Reads state and sends commands. The SSE stream below is server-specific and stays separate.
+    private let backend: any SonosBackend
     private let networkStore: NetworkConfigStore
     private let settingsStore: AppSettingsStore
     private var cancellables = Set<AnyCancellable>()
@@ -82,7 +84,9 @@ final class SonosViewModel: ObservableObject {
         self.baseURL = URLInput.normalizedBaseURL(baseURL)
         self.networkStore = networkStore
         self.settingsStore = settingsStore
-        self.lastConfigSnapshot = networkStore.configs.first { $0.id == configID }
+        let config = networkStore.configs.first { $0.id == configID }
+        self.lastConfigSnapshot = config
+        self.backend = config?.backend ?? ServerBackend(baseURL: baseURL)
 
         let sseConfig = URLSessionConfiguration.default
         sseConfig.timeoutIntervalForRequest = Constants.sseTimeout
@@ -112,10 +116,6 @@ final class SonosViewModel: ObservableObject {
 
     private var currentConfig: NetworkConfig? {
         networkStore.configs.first { $0.id == configID }
-    }
-
-    private func apiURL(_ pathComponents: String...) -> URL? {
-        SonosHTTP.url(base: baseURL, pathComponents)
     }
 
     private func updateStatus() {
@@ -210,17 +210,11 @@ final class SonosViewModel: ObservableObject {
         refreshGeneration += 1
         let generation = refreshGeneration
 
-        guard let zonesURL = URL(string: "\(baseURL)/zones"),
-              let favoritesURL = URL(string: "\(baseURL)/favorites") else {
-            refreshError = "Invalid server URL."
-            updateStatus()
-            return
-        }
-
+        let backend = self.backend
         log.debug("Refreshing \(self.baseURL, privacy: .public)")
-        // /zones drives the UI; /favorites is independent, so a favorites failure never blocks zone state.
-        async let zonesResult = SonosHTTP.fetchJSON([Zone].self, from: zonesURL)
-        async let favoritesResult = SonosHTTP.fetchJSON([String].self, from: favoritesURL)
+        // Zones drive the UI; favorites are independent, so a favorites failure never blocks zone state.
+        async let zonesResult = Result(asyncCatching: { try await backend.zones() })
+        async let favoritesResult = Result(asyncCatching: { try await backend.favoriteNames() })
         let zones = await zonesResult
         let favorites = await favoritesResult
 
@@ -355,9 +349,9 @@ final class SonosViewModel: ObservableObject {
     func adjustVolume(room: String, delta: Int) {
         let newVolume = max(0, min(100, (volume[room] ?? 50) + delta))
         volume[room] = newVolume // Optimistic update
-        let url = apiURL(room, "volume", "\(newVolume)")
+        let backend = self.backend
         Task { [weak self] in
-            await SonosHTTP.get(url)
+            await backend.setVolume(newVolume, room: room)
             // Always reconcile: fixed-volume outputs accept the request without changing anything.
             await self?.refresh()
         }
@@ -366,18 +360,17 @@ final class SonosViewModel: ObservableObject {
     func toggleMute(room: String) {
         let mute = !(isMuted[room] ?? false)
         isMuted[room] = mute // Optimistic update
-        let url = apiURL(room, mute ? "mute" : "unmute")
+        let backend = self.backend
         Task { [weak self] in
-            await SonosHTTP.get(url)
+            await backend.setMute(mute, room: room)
             await self?.refresh()
         }
     }
 
     @discardableResult
     private func sendStreamURL(to room: String, station: Station) async -> Bool {
-        let url = SonosHTTP.presetURL(base: baseURL, room: room, station: station)
         log.debug("Sending \(station.name, privacy: .public) to \(room, privacy: .public)")
-        return await SonosHTTP.get(url)
+        return await backend.loadPreset(station, coordinator: room)
     }
 
     func togglePlayback(group: SonosGroup) {
@@ -385,15 +378,15 @@ final class SonosViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             if self.playbackState[coordinator] == "PLAYING" {
-                await SonosHTTP.get(self.apiURL(coordinator, "pause"))
+                await self.backend.pause(coordinator: coordinator)
             } else {
                 // Resume whatever the transport holds. A stopped stream (live radio after a pause) or a failed
                 // resume reloads the selected preset instead.
                 let reloadFirst = self.playbackState[coordinator] == "STOPPED" && self.selectedStationByRoom[coordinator] != nil
-                let resumed = reloadFirst ? false : await SonosHTTP.get(self.apiURL(coordinator, "play"))
+                let resumed = reloadFirst ? false : await self.backend.play(coordinator: coordinator)
                 if !resumed, let station = self.selectedStationByRoom[coordinator] {
                     await self.sendStreamURL(to: coordinator, station: station)
-                    await SonosHTTP.get(self.apiURL(coordinator, "play"))
+                    await self.backend.play(coordinator: coordinator)
                 }
             }
             await self.refresh()
@@ -405,17 +398,17 @@ final class SonosViewModel: ObservableObject {
     }
 
     func joinGroup(room: String, target: String) {
-        let url = apiURL(room, "join", target)
+        let backend = self.backend
         Task { [weak self] in
-            await SonosHTTP.get(url)
+            await backend.join(room: room, to: target)
             await self?.refresh()
         }
     }
 
     func leaveGroup(room: String) {
-        let url = apiURL(room, "leave")
+        let backend = self.backend
         Task { [weak self] in
-            await SonosHTTP.get(url)
+            await backend.leave(room: room)
             await self?.refresh()
         }
     }
@@ -424,7 +417,7 @@ final class SonosViewModel: ObservableObject {
         Task { [weak self] in
             guard let self else { return }
             await self.sendStreamURL(to: room, station: station)
-            await SonosHTTP.get(self.apiURL(room, "play"))
+            await self.backend.play(coordinator: room)
             for _ in 0..<3 {
                 try? await Task.sleep(for: .seconds(1))
                 await self.refresh()

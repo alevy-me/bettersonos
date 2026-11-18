@@ -26,20 +26,16 @@ import BetterSonosCore
 /// live state; the room cache only feeds Siri's vocabulary and offline suggestions.
 enum SonosDirectory {
 
-    /// A room resolved against live server state.
+    /// A room resolved against live state.
     struct Located {
         let config: NetworkConfig
-        let baseURL: String
         let member: Member
         let coordinator: Member
 
+        var backend: any SonosBackend { config.backend }
         var roomName: String { member.roomName }
         var coordinatorName: String { coordinator.roomName }
         var isPlaying: Bool { SonosDirectory.isPlaying(coordinator) }
-
-        func url(_ components: String...) -> URL? {
-            SonosHTTP.url(base: baseURL, components)
-        }
     }
 
     static func enabledConfigs() -> [NetworkConfig] {
@@ -52,13 +48,10 @@ enum SonosDirectory {
     }
 
     static func zones(for config: NetworkConfig) async throws -> [Zone] {
-        let base = URLInput.normalizedBaseURL(config.baseURL)
-        guard let url = URL(string: base + "/zones") else {
+        do {
+            return try await config.backend.zones()
+        } catch {
             throw SonosIntentError.unreachable(config.displayName)
-        }
-        switch await SonosHTTP.fetchJSON([Zone].self, from: url) {
-        case .success(let zones): return zones
-        case .failure: throw SonosIntentError.unreachable(config.displayName)
         }
     }
 
@@ -105,7 +98,7 @@ enum SonosDirectory {
         let zones = try await zones(for: config)
         for zone in zones {
             if let member = players(in: zone).first(where: { $0.roomName == room.name }) {
-                return Located(config: config, baseURL: URLInput.normalizedBaseURL(config.baseURL), member: member, coordinator: zone.coordinator)
+                return Located(config: config, member: member, coordinator: zone.coordinator)
             }
         }
         throw SonosIntentError.roomNotFound(room.name)
@@ -118,9 +111,8 @@ enum SonosDirectory {
             for config in configs {
                 group.addTask {
                     guard let zones = try? await zones(for: config) else { return [] }
-                    let base = URLInput.normalizedBaseURL(config.baseURL)
                     return zones.filter { isPlaying($0.coordinator) }.map {
-                        Located(config: config, baseURL: base, member: $0.coordinator, coordinator: $0.coordinator)
+                        Located(config: config, member: $0.coordinator, coordinator: $0.coordinator)
                     }
                 }
             }
@@ -132,8 +124,9 @@ enum SonosDirectory {
 
     // MARK: - Requests
 
-    static func send(_ url: URL?) async throws {
-        guard await SonosHTTP.get(url) else { throw SonosIntentError.requestFailed }
+    /// Turns a command's success into a thrown error Siri can speak.
+    static func require(_ ok: Bool) throws {
+        guard ok else { throw SonosIntentError.requestFailed }
     }
 
     /// Spoken description of a track, such as "So What by Miles Davis". Uses cached presets to name

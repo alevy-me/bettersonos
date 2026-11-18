@@ -22,16 +22,16 @@ A direct network is reachable when Bonjour finds its household or a cached speak
 
 ## What the network checks established
 
-All checks were read-only, on a real home network on 2026-11-18.
+All checks were read-only, on a real eight-speaker household on 2026-11-18.
 
 | Finding | Evidence | Consequence |
 |---|---|---|
 | Bonjour finds every speaker | `_sonos._tcp` listed all 8 speakers within a second | No multicast entitlement; one local network prompt |
-| Each Bonjour record carries the control address | TXT `location=http://192.168.1.166:1400/xml/device_description.xml` | No extra lookup |
-| Each record names its household | TXT `hhid=Sonos_XXXX…` | One network per household, created automatically |
+| Each Bonjour record carries the control address | TXT `location=http://<speaker IP>:1400/xml/device_description.xml` | No extra lookup |
+| Each record names its household | TXT `hhid=Sonos_…` | One network per household, created automatically |
 | Any one speaker reports the whole layout | ZoneGroupTopology `GetZoneGroupState` returned all 5 groups | Discovery only has to reach one speaker |
 | Stereo pairs and satellites are marked | The TV Room's right speaker is `Invisible="1"` with a `ChannelMapSet` | Show visible members only; Bonjour's duplicate TV Room is dropped |
-| Speakers span subnets | two subnets | Bonjour saw both from the Mac; watch for a phone that can't |
+| Speakers span subnets | Two subnets in one household | Bonjour saw both from the Mac; watch for a phone that can't |
 | The loaded source's name is exact | `GetMediaInfo` title: "Spotify", "Line-In", station names | Source-only display with no guessing |
 | Stopped streams keep their metadata | Stopped TuneIn station still returns full DIDL in `CurrentURIMetaData` | Any stopped station restarts, preset or not |
 | Track metadata is unusable | `GetPositionInfo` titles were ad-bumper URLs and HLS file names | Confirms source-only display |
@@ -121,6 +121,7 @@ Each phase ends with a build, a test on real speakers, and a commit.
 3. **Direct presets.** Favorites with metadata, CSV and manual streams, line-in, restarting any stopped stream.
 4. **Watch and Siri on direct networks.** Verify port 1400 from the watch first.
 5. **Merge server and direct networks** for the same household, with the hybrid precedence above.
+6. **Update README.md.** It predates the watch app, Siri, the BonTon name and direct control. It still says the app "does NOT work on its own" without node-sonos-http-api, that setup means entering a server's Base URL, and that it targets iOS 17 with Xcode 16. Rewrite it for: BonTon on iPhone and Apple Watch; direct control on the home Wi-Fi with no server, found automatically; node-sonos-http-api as optional, for control away from home; Siri and Shortcuts; source-only now-playing; iOS 26 / watchOS 26 and current Xcode; building and running `Tests/Harness/run_all.sh`. Keep the existing motivation and the favorites-and-radio focus. Do it once phase 2 lands, since "works without a server" is only true when direct commands exist.
 
 ## Decisions needed
 

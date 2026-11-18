@@ -47,6 +47,8 @@ final class SonosViewModel: ObservableObject {
     private let baseURL: String
     /// Reads state and sends commands. The SSE stream below is server-specific and stays separate.
     private let backend: any SonosBackend
+    /// A local network talks to the speakers directly: no server, so no SSE, and a faster poll instead.
+    private let isLocal: Bool
     private let networkStore: NetworkConfigStore
     private let settingsStore: AppSettingsStore
     private var cancellables = Set<AnyCancellable>()
@@ -87,6 +89,7 @@ final class SonosViewModel: ObservableObject {
         let config = networkStore.configs.first { $0.id == configID }
         self.lastConfigSnapshot = config
         self.backend = config?.backend ?? ServerBackend(baseURL: baseURL)
+        self.isLocal = config?.isLocal ?? false
 
         let sseConfig = URLSessionConfiguration.default
         sseConfig.timeoutIntervalForRequest = Constants.sseTimeout
@@ -96,7 +99,7 @@ final class SonosViewModel: ObservableObject {
         observeAppSettings()
         observeConfig()
         observeAppLifecycle()
-        startListeningForEvents()
+        if !isLocal { startListeningForEvents() }
         startPolling()
 
         Task { [weak self] in
@@ -229,7 +232,13 @@ final class SonosViewModel: ObservableObject {
         case .failure(let error):
             log.error("Error refreshing Sonos state: \(error.localizedDescription, privacy: .public)")
             if generation > appliedRefreshGeneration {
-                refreshError = "Failed to refresh speaker status. Please check your connection to the node-sonos-http-api server."
+                refreshError = isLocal
+                    ? "Can't reach your speakers. Make sure you're on the same Wi-Fi as your Sonos system."
+                    : "Failed to refresh speaker status. Please check your connection to the node-sonos-http-api server."
+            }
+            // Speakers that stop answering may have new addresses: ask discovery to look again (it debounces).
+            if isLocal, let householdID = currentConfig?.householdID {
+                NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: householdID)
             }
         }
 
@@ -607,11 +616,14 @@ final class SonosViewModel: ObservableObject {
     }
 
     /// Polls independently of SSE, so a flapping stream can never starve the poll.
+    /// Server networks get live updates over SSE and poll only as a backstop; local networks rely on polling.
+    private var pollInterval: TimeInterval { isLocal ? Constants.localPollInterval : Constants.pollInterval }
+
     private func startPolling() {
         pollTask?.cancel()
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(Constants.pollInterval))
+                try? await Task.sleep(for: .seconds(self?.pollInterval ?? Constants.pollInterval))
                 if Task.isCancelled { return }
                 guard let self else { return }
                 await self.refresh()
@@ -633,7 +645,7 @@ final class SonosViewModel: ObservableObject {
             .sink { [weak self] _ in
                 guard let self else { return }
                 self.retryAttempts = 0
-                self.startListeningForEvents()
+                if !self.isLocal { self.startListeningForEvents() }
                 self.startPolling()
                 Task { [weak self] in await self?.refresh() }
             }

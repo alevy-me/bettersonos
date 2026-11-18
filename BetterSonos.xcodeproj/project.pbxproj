@@ -52,7 +52,6 @@
 		7ACB0D0E2E00000000000012 /* Exceptions for "BetterSonosWatch" folder in "BetterSonosWatch" target */ = {
 			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
 			membershipExceptions = (
-				BetterSonosWatch.entitlements,
 				Info.plist,
 			);
 			target = 7ACB0D0E2E00000000000018 /* BetterSonosWatch */;

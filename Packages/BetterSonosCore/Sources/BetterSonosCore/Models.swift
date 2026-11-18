@@ -18,6 +18,7 @@
 //
 
 import Foundation
+import CryptoKit
 import os.log
 
 // MARK: - Constants
@@ -27,6 +28,8 @@ public enum Constants {
     public static let stationsPerPage = 6
     public static let stationsPerRow = 3
     public static let pollInterval: TimeInterval = 60
+    /// Polling for a local network, which has no SSE stream to push changes.
+    public static let localPollInterval: TimeInterval = 5
     /// Idle timeout for the SSE stream. A timeout means "quiet", not "broken", and is not counted as a failure.
     public static let sseTimeout: TimeInterval = 300
     /// Consecutive failures to establish the SSE stream before the UI reports the live connection as lost.
@@ -94,6 +97,15 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
     public var lineInCustomNames: [String: String] = [:] // UUID: Custom Name
     public var manuallyDisabledVolumeUUIDs: Set<String> = []
     public var lastModified: Date
+    /// Set for a network found on the local network: the Sonos household ID from Bonjour (`hhid`).
+    public var householdID: String? = nil
+    /// Last known speaker addresses ("192.168.1.20:1400") by player ID, for direct control.
+    public var speakerAddresses: [String: String] = [:]
+
+    /// A network discovered on the local network and controlled directly, with no server.
+    public var isLocal: Bool {
+        householdID != nil && baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+    }
 
     enum CodingKeys: String, CodingKey {
         case id, displayName, baseURL, enabled
@@ -104,6 +116,8 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
         case lineInCustomNames
         case lastModified
         case manuallyDisabledVolumeUUIDs
+        case householdID
+        case speakerAddresses
     }
 
     public init(id: UUID, displayName: String, baseURL: String, enabled: Bool, showDefaultPresetsForThisNetwork: Bool, explicitlyDisabledFavoriteURLs: Set<String> = [], lastKnownServerFavorites: [Station]? = nil, enabledLineInUUIDs: Set<String> = [], lineInCustomNames: [String: String] = [:], manuallyDisabledVolumeUUIDs: Set<String> = [], lastModified: Date = Date()) {
@@ -135,6 +149,32 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
         lineInCustomNames = try container.decodeIfPresent([String: String].self, forKey: .lineInCustomNames) ?? [:]
         lastModified = try container.decodeIfPresent(Date.self, forKey: .lastModified) ?? Date()
         manuallyDisabledVolumeUUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .manuallyDisabledVolumeUUIDs) ?? []
+        householdID = try container.decodeIfPresent(String.self, forKey: .householdID)
+        speakerAddresses = try container.decodeIfPresent([String: String].self, forKey: .speakerAddresses) ?? [:]
+    }
+
+    /// A local network for a discovered household. The id is derived from the household ID, so every
+    /// device that discovers the same system creates the same config and iCloud merges them as one.
+    public static func local(householdID: String, name: String, speakers: [String: String]) -> NetworkConfig {
+        var config = NetworkConfig(
+            id: localID(forHousehold: householdID),
+            displayName: name,
+            baseURL: "",
+            enabled: true,
+            showDefaultPresetsForThisNetwork: true
+        )
+        config.householdID = householdID
+        config.speakerAddresses = speakers
+        return config
+    }
+
+    /// A stable UUID for a household ID: the first 16 bytes of its SHA-256, in UUID version 5 layout.
+    public static func localID(forHousehold householdID: String) -> UUID {
+        var bytes = Array(SHA256.hash(data: Data("bonton-household:\(householdID)".utf8)).prefix(16))
+        bytes[6] = (bytes[6] & 0x0F) | 0x50 // version 5 layout
+        bytes[8] = (bytes[8] & 0x3F) | 0x80 // RFC 4122 variant
+        return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
+                           bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
     }
 
     /// True when the apps should gray out volume for this player: a known fixed-volume device,

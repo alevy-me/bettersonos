@@ -14,6 +14,13 @@
 			<string>Bonton</string>
 		</dict>
 	</array>
+	<!-- Direct control: finds Sonos speakers on the local network with Bonjour. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>BonTon finds and controls the Sonos speakers on your Wi-Fi.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_sonos._tcp</string>
+	</array>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

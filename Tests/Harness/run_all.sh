@@ -28,7 +28,7 @@ build() { local out=$1; shift
           local err=$(swiftc ${L[@]} "$@" -o $out 2>&1 | grep " error: " | head -3)
           [ -n "$err" ] && { echo "BUILD FAILED $out:\n$err"; failed=1; rm -f $out; } }
 build models        $H/models/main.swift
-build vm            SonosViewModel.swift $H/stub.swift $H/shim.swift $H/vm/main.swift
+build vm            SonosViewModel.swift $H/stub.swift $H/discovery-stub.swift $H/shim.swift $H/vm/main.swift
 build watch         WatchNetworkController.swift $H/stub.swift $H/watch/main.swift
 build watch-dealloc WatchNetworkController.swift $H/stub.swift $H/watch-dealloc/main.swift
 build sole-playing  WatchNetworkController.swift $H/stub.swift $H/sole-playing/main.swift
@@ -37,6 +37,11 @@ build radio-watch   WatchNetworkController.swift $H/stub.swift $H/radio-watch/ma
 build intents       ${INTENTS[@]} $H/stub.swift $H/intents/main.swift
 build radio-siri    ${INTENTS[@]} $H/stub.swift $H/radio-siri/main.swift
 build now-playing   $H/now-playing/main.swift
+build direct        $H/direct/main.swift
+build vm-local      SonosViewModel.swift $H/stub.swift $H/discovery-stub.swift $H/shim.swift $H/vm-local/main.swift
+strip $R/BetterSonos/SonosDiscovery.swift > SonosDiscovery.swift
+strip $R/BetterSonos/DiscoveryCoordinator.swift > DiscoveryCoordinator.swift
+build discovery     SonosDiscovery.swift DiscoveryCoordinator.swift $H/shim.swift $H/discovery/main.swift
 
 pids=()
 serve() { python3 -I $H/servers/$1 $2 "${@:3}" >/dev/null 2>&1 & pids+=($!); }
@@ -50,6 +55,9 @@ serve radio.py 18807 /dev/null
 serve two-groups.py 18808 /dev/null
 serve two-groups.py 18809 /dev/null
 serve radio.py 18810 /dev/null
+serve speaker.py 18820 /dev/null       # players on 18820-18826
+serve speaker.py 18830 /dev/null       # players on 18830-18836
+serve grouped.py 18840 /dev/null
 sleep 1
 
 run() { local name=$1; shift; echo "== $name"
@@ -68,6 +76,9 @@ run "stopped radio, watch"          radio-watch 18807
 run "Siri intents"                  intents 18808 18809
 run "stopped radio, Siri"           radio-siri 18810
 run "now playing, captured states"  now-playing $H/fixtures/captured-states.jsonl
+run "direct backend"                direct 18820
+run "iOS view model, local network" vm-local 18830
+run "discovery triggers"            discovery 18840
 
 echo
 [ $failed -eq 0 ] && echo "ALL TESTS PASSED" || { echo "SOME TESTS FAILED"; exit 1; }

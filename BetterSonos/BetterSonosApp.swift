@@ -24,14 +24,22 @@ import BetterSonosCore
 
 @main
 struct BetterSonosApp: App {
-    @StateObject private var networkStore = NetworkConfigStore()
+    @StateObject private var networkStore: NetworkConfigStore
     @StateObject private var settingsStore = AppSettingsStore.shared
+    @StateObject private var discovery: DiscoveryCoordinator
+
+    init() {
+        let store = NetworkConfigStore()
+        _networkStore = StateObject(wrappedValue: store)
+        _discovery = StateObject(wrappedValue: DiscoveryCoordinator(networkStore: store))
+    }
 
     var body: some Scene {
         WindowGroup {
             BetterSonosView()
                 .environmentObject(networkStore)
                 .environmentObject(settingsStore)
+                .environmentObject(discovery)
         }
     }
 }
@@ -41,6 +49,7 @@ struct BetterSonosApp: App {
 struct BetterSonosView: View {
     @EnvironmentObject var networkStore: NetworkConfigStore
     @EnvironmentObject var settingsStore: AppSettingsStore
+    @EnvironmentObject var discovery: DiscoveryCoordinator
     @State private var showSettings = false
     @State private var configForEditingModal: NetworkConfig? = nil // Used to present NetworkEditModal for add/edit
 
@@ -65,38 +74,24 @@ struct BetterSonosView: View {
                 .padding(.horizontal) // Add this modifier to the HStack
 
                 if networkStore.configs.isEmpty {
-                    Spacer() // Pushes content to center
-                    VStack(spacing: 16) {
-                        Text("No Sonos networks configured.")
-                            .font(.headline)
-                            .multilineTextAlignment(.center)
-                        Text("Add a node-sonos-http-api server to get started.")
-                            .font(.subheadline)
-                            .multilineTextAlignment(.center)
-                            .foregroundColor(.gray)
-                        Button {
-                            // Prepare a new NetworkConfig for adding
-                            configForEditingModal = NetworkConfig(
-                                id: UUID(), // New ID for a new network
-                                displayName: "",
-                                baseURL: "", // User will fill this in
-                                enabled: true, // Default to enabled
-                                showDefaultPresetsForThisNetwork: true, // Default as per previous discussions
-                                explicitlyDisabledFavoriteURLs: [],
-                                lastKnownServerFavorites: nil
-                            )
-                        } label: {
-                            Text("Add Network")
-                                .padding(.horizontal)
-                        }
-                        .buttonStyle(.borderedProminent)
+                    // Discovery runs first; adding a server is the fallback when nothing is found.
+                    NoNetworksView {
+                        configForEditingModal = NetworkConfig(
+                            id: UUID(),
+                            displayName: "",
+                            baseURL: "",
+                            enabled: true,
+                            showDefaultPresetsForThisNetwork: true
+                        )
                     }
-                    .padding(.horizontal)
-                    Spacer() // Pushes content to center
                 } else {
                     networkList // Show the list if networks exist
                 }
             }
+        }
+        .task { discovery.run(force: true) }
+        .sheet(item: $discovery.householdToName) { household in
+            NameHouseholdSheet(household: household)
         }
         .sheet(isPresented: $showSettings) {
                 NetworkSettingsModal(isPresented: $showSettings)
@@ -137,14 +132,19 @@ struct BetterSonosView: View {
         ScrollView {
             LazyVStack(spacing: 24) {
                 ForEach(enabledConfigs) { config in
-                    NetworkAccordionView(
-                        config: config,
-                        networkStore: networkStore,
-                        settingsStore: settingsStore
-                    )
-                    // Keyed by identity and server address only. The view model observes its own config,
-                    // so edits and favorites merges no longer tear down the row and its state.
-                    .id("\(config.id.uuidString)|\(config.baseURL)")
+                    if discovery.isAvailable(config) {
+                        NetworkAccordionView(
+                            config: config,
+                            networkStore: networkStore,
+                            settingsStore: settingsStore
+                        )
+                        // Keyed by identity and server address only. The view model observes its own config,
+                        // so edits and favorites merges no longer tear down the row and its state.
+                        .id("\(config.id.uuidString)|\(config.baseURL)")
+                    } else {
+                        // A local network away from its Wi-Fi stays listed, but shows no stale state.
+                        UnavailableNetworkRow(config: config, isChecking: discovery.isFirstSearchPending || discovery.isSearching)
+                    }
                 }
             }
             .padding(.horizontal)

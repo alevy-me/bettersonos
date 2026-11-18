@@ -39,8 +39,9 @@ enum SonosDirectory {
     }
 
     static func enabledConfigs() -> [NetworkConfig] {
-        // Read-only: Siri must never write configs back to iCloud.
-        NetworkConfigStore(cloudReadOnly: true).configs.filter(\.enabled)
+        // Read-only: Siri must never write configs back to iCloud. Local (direct) networks join Siri
+        // in direct-control phase 4, once direct commands exist.
+        NetworkConfigStore(cloudReadOnly: true).configs.filter { $0.enabled && !$0.isLocal }
     }
 
     static func isPlaying(_ member: Member) -> Bool {

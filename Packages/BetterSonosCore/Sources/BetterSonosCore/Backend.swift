@@ -102,9 +102,9 @@ public struct ServerBackend: SonosBackend {
 }
 
 extension NetworkConfig {
-    /// The backend for this network. Every network is a server network until direct control lands.
+    /// The backend for this network: the speakers themselves for a local network, otherwise the server.
     public var backend: any SonosBackend {
-        ServerBackend(baseURL: baseURL)
+        isLocal ? DirectBackend(speakers: speakerAddresses) : ServerBackend(baseURL: baseURL)
     }
 }
 

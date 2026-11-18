@@ -26,6 +26,7 @@ struct NetworkSettingsModal: View {
     @Binding var isPresented: Bool
 
     @State private var selectedConfig: NetworkConfig? = nil
+    @State private var localConfigToEdit: NetworkConfig? = nil
     @State private var newStationName: String = ""
     @State private var newStationScheme: String = "https://"
     @State private var newStationAddress: String = "" // Renamed from newStationURL
@@ -56,6 +57,9 @@ struct NetworkSettingsModal: View {
                     .accessibilityLabel("Add Network")
                 }
             }
+        }
+        .sheet(item: $localConfigToEdit) { config in
+            LocalNetworkEditSheet(config: config)
         }
         .sheet(item: $selectedConfig) { config in
             NetworkEditModal(
@@ -206,17 +210,22 @@ struct NetworkSettingsModal: View {
                         VStack(alignment: .leading) {
                             Text(config.displayName)
                                 .font(.headline)
-                            Text(config.baseURL)
+                            Text(config.isLocal ? "On this Wi-Fi, no server" : config.baseURL)
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                         }
                     }
                     Spacer()
                     Button {
-                        selectedConfig = config
+                        if config.isLocal {
+                            localConfigToEdit = config
+                        } else {
+                            selectedConfig = config
+                        }
                     } label: {
                         Image(systemName: "pencil")
                     }
+                    .accessibilityLabel("Edit \(config.displayName)")
                     .buttonStyle(BorderlessButtonStyle())
                     
                 }

@@ -1,0 +1,73 @@
+#!/bin/zsh
+# Fake-server tests for BonTon. Builds BetterSonosCore and each test program from the current
+# sources into a temporary folder, starts the fake servers, and runs every test with a 90 s
+# timeout. A test that fails to build is reported and skipped, never run from a stale binary.
+#
+# Usage: Tests/Harness/run_all.sh        (from anywhere; macOS with Xcode and python3)
+
+H=${0:A:h}
+R=${H:h:h}
+W=$(mktemp -d -t bonton-harness)
+trap 'kill ${pids[@]} 2>/dev/null; rm -rf $W' EXIT
+cd $W
+
+mkdir mod
+swiftc -parse-as-library -emit-library -emit-module -module-name BetterSonosCore \
+    -emit-module-path mod/BetterSonosCore.swiftmodule $R/Packages/BetterSonosCore/Sources/BetterSonosCore/*.swift \
+    -o mod/libBetterSonosCore.dylib -Xlinker -install_name -Xlinker @rpath/libBetterSonosCore.dylib 2>&1 | grep " error: " && { echo "BetterSonosCore failed to build"; exit 1; }
+L=(-I mod -L mod -lBetterSonosCore -Xlinker -rpath -Xlinker $W/mod)
+
+# App sources under test, with the bundle-ID loggers made host-safe.
+strip() { sed -e 's/Bundle.main.bundleIdentifier ?? "BetterSonosWatch"/"test"/; s/Bundle.main.bundleIdentifier!/"test"/' "$1"; }
+strip $R/BetterSonos/SonosViewModel.swift > SonosViewModel.swift
+strip $R/BetterSonosWatch/WatchNetworkController.swift > WatchNetworkController.swift
+INTENTS=($R/Shared/Intents/SonosDirectory.swift $R/Shared/Intents/SonosEntities.swift $R/Shared/Intents/SonosIntents.swift)
+
+failed=0
+build() { local out=$1; shift
+          local err=$(swiftc ${L[@]} "$@" -o $out 2>&1 | grep " error: " | head -3)
+          [ -n "$err" ] && { echo "BUILD FAILED $out:\n$err"; failed=1; rm -f $out; } }
+build models        $H/models/main.swift
+build vm            SonosViewModel.swift $H/stub.swift $H/shim.swift $H/vm/main.swift
+build watch         WatchNetworkController.swift $H/stub.swift $H/watch/main.swift
+build watch-dealloc WatchNetworkController.swift $H/stub.swift $H/watch-dealloc/main.swift
+build sole-playing  WatchNetworkController.swift $H/stub.swift $H/sole-playing/main.swift
+build presets       WatchNetworkController.swift $H/stub.swift $H/presets/main.swift
+build radio-watch   WatchNetworkController.swift $H/stub.swift $H/radio-watch/main.swift
+build intents       ${INTENTS[@]} $H/stub.swift $H/intents/main.swift
+build radio-siri    ${INTENTS[@]} $H/stub.swift $H/radio-siri/main.swift
+build now-playing   $H/now-playing/main.swift
+
+pids=()
+serve() { python3 -I $H/servers/$1 $2 "${@:3}" >/dev/null 2>&1 & pids+=($!); }
+serve basic.py 18801 ok /dev/null
+serve grouped.py 18802 /dev/null
+serve grouped.py 18803 /dev/null
+serve two-groups.py 18804 /dev/null
+serve two-groups.py 18805 /dev/null
+serve presets.py 18806 /dev/null
+serve radio.py 18807 /dev/null
+serve two-groups.py 18808 /dev/null
+serve two-groups.py 18809 /dev/null
+serve radio.py 18810 /dev/null
+sleep 1
+
+run() { local name=$1; shift; echo "== $name"
+        [ -x ./$1 ] || { echo "SKIPPED (did not build)"; failed=1; return; }
+        local out; out=$(perl -e 'alarm shift; exec @ARGV' 90 ./"$@" 2>/dev/null); local code=$?
+        print -r -- "$out" | grep -E "PASS|FAIL|ALL |MATCH|status:|deallocated"
+        [ $code -eq 142 ] && { echo "TIMED OUT"; failed=1; }
+        print -r -- "$out" | grep -qE "FAIL|MISMATCHED" && failed=1 }
+run "model logic"                   models
+run "iOS view model"                vm 18801
+run "watch controller"              watch 18802
+run "watch deallocation"            watch-dealloc 18803
+run "only one group playing"        sole-playing 18804 18805
+run "watch presets"                 presets 18806
+run "stopped radio, watch"          radio-watch 18807
+run "Siri intents"                  intents 18808 18809
+run "stopped radio, Siri"           radio-siri 18810
+run "now playing, captured states"  now-playing $H/fixtures/captured-states.jsonl
+
+echo
+[ $failed -eq 0 ] && echo "ALL TESTS PASSED" || { echo "SOME TESTS FAILED"; exit 1; }

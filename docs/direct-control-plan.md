@@ -12,9 +12,9 @@ Autodiscovery runs first, and keeps running in the background of the app's life.
 
 **What the user sees depends on whether any network exists, not on first run:**
 
-- **No networks configured, and discovery finds a household:** BonTon creates a network for it and shows it. Adding a server network is then available only in Settings.
+- **No networks configured, and discovery finds a household:** BonTon shows what it found and offers the name "Home" in an editable field; confirming creates the network. Adding a server network is then available only in Settings.
 - **No networks configured, and discovery finds nothing:** the empty state offers Add a Network (a server), with an explanation and a Search Again button. It appears every time until a network exists. Local network permission denied gets its own message, with a link to Settings.
-- **Networks already exist:** discovery is invisible. A new household is added with a brief "Found a new Sonos system" note. Changed speaker addresses update quietly.
+- **Networks already exist:** discovery is invisible, except that a new household gets the same naming prompt (offering "Home 2" and so on). Changed speaker addresses update quietly.
 
 **A direct network away from home stays visible, marked unavailable.** Its row reads "Not available on this network" ("Offline" on the watch, where space is short). Its rooms and controls aren't shown, so there's no stale state. It returns as soon as its household is reachable again. A server network that fails still shows its error as today, because that's a real fault rather than being away.
 
@@ -124,11 +124,10 @@ Each phase ends with a build, a test on real speakers, and a commit.
 
 ## Decisions needed
 
-- **Name for a discovered household.** Sonos doesn't publish one. Recommend "Home", renamable, and "Home 2" for a second household.
 - **The hard-coded fixed-volume list.** Recommend removing it once phase 2 lands. It holds only a placeholder ID, and server networks keep Disable Volume Control.
 - **iOS poll interval for direct networks.** Recommend 5 seconds in the foreground, when no server event stream is available.
 
-Decided: a direct network away from home shows as "Not available on this network", not hidden; a household with both modes is one merged network, direct-first with the server's SSE as a change signal.
+Decided: a discovered household is offered the name "Home" ("Home 2" for another), editable before it's created; a direct network away from home shows as "Not available on this network", not hidden; a household with both modes is one merged network, direct-first with the server's SSE as a change signal.
 
 ## Risks
 

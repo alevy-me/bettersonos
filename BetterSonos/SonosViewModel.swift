@@ -300,10 +300,13 @@ final class SonosViewModel: ObservableObject {
     }
 
     /// Saves speaker addresses the layout reported, only when they changed, so new speakers and new
-    /// addresses reach the watch and other devices without waiting for discovery.
+    /// addresses reach the watch and other devices without waiting for discovery. Merged, not replaced:
+    /// a speaker missing from one read (rebooting, asleep) keeps its saved address.
     private func saveLearnedAddresses(_ addresses: [String: String]) {
-        guard isLocal, !addresses.isEmpty, var config = currentConfig, config.speakerAddresses != addresses else { return }
-        config.speakerAddresses = addresses
+        guard isLocal, !addresses.isEmpty, var config = currentConfig else { return }
+        let merged = config.speakerAddresses.merging(addresses) { _, new in new }
+        guard merged != config.speakerAddresses else { return }
+        config.speakerAddresses = merged
         networkStore.update(config)
     }
 

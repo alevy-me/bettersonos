@@ -60,10 +60,13 @@ final class DiscoveryCoordinator: ObservableObject {
     private var pendingRun: Task<Void, Never>?
     private var rerunAfterSearch = false
     private var lastFailureTriggered: Date = .distantPast
+    /// A confirmed outage reported inside the rate limit still gets its run, once the limit allows.
+    private var deferredFailureRun: Task<Void, Never>?
 
     static let throttle: TimeInterval = 10 * 60
     static let coalesceDelay: Duration = .milliseconds(500)
-    static let failureRetryInterval: TimeInterval = 30
+    /// Minimum time between discovery runs triggered by outage reports. 30 s in the app; tests shorten it.
+    private let failureRetryInterval: TimeInterval
     /// Posted by a local network's view model once its speakers' silence is confirmed (three failed
     /// scheduled polls). `object` is the household ID.
     static let localNetworkUnreachable = Notification.Name("BonTonLocalNetworkUnreachable")
@@ -73,8 +76,10 @@ final class DiscoveryCoordinator: ObservableObject {
     /// unavailable: a single failed discovery probe never makes a loaded network flicker.
     private var confirmedUnreachable: Set<String> = []
 
-    init(networkStore: NetworkConfigStore, discover: @escaping @MainActor () async -> DiscoveryOutcome = { await SonosDiscovery.discover() }) {
+    init(networkStore: NetworkConfigStore, failureRetryInterval: TimeInterval = 30,
+         discover: @escaping @MainActor () async -> DiscoveryOutcome = { await SonosDiscovery.discover() }) {
         self.networkStore = networkStore
+        self.failureRetryInterval = failureRetryInterval
         self.discover = discover
 
         // Network changes. Gateways change when switching Wi-Fi networks even though the interface
@@ -121,9 +126,20 @@ final class DiscoveryCoordinator: ObservableObject {
             .sink { [weak self] note in
                 guard let self else { return }
                 if let householdID = note.object as? String { self.confirmedUnreachable.insert(householdID) }
-                guard Date().timeIntervalSince(self.lastFailureTriggered) >= Self.failureRetryInterval else { return }
-                self.lastFailureTriggered = Date()
-                self.request(force: true)
+                let wait = self.failureRetryInterval - Date().timeIntervalSince(self.lastFailureTriggered)
+                if wait <= 0 {
+                    self.lastFailureTriggered = Date()
+                    self.request(force: true)
+                } else if self.deferredFailureRun == nil {
+                    // Rate-limited: a view model reports an outage once, so it must not be dropped.
+                    self.deferredFailureRun = Task { [weak self] in
+                        try? await Task.sleep(for: .seconds(wait))
+                        guard let self, !Task.isCancelled else { return }
+                        self.deferredFailureRun = nil
+                        self.lastFailureTriggered = Date()
+                        self.request(force: true)
+                    }
+                }
             }
             .store(in: &cancellables)
 
@@ -204,9 +220,14 @@ final class DiscoveryCoordinator: ObservableObject {
         let covered = await playersCoveredByServerNetworks()
         for household in households {
             reachable.insert(household.householdID)
+            // Found by Bonjour: whatever confirmed an outage before, the speakers are answering now.
+            confirmedUnreachable.remove(household.householdID)
             if var existing = networkStore.configs.first(where: { $0.householdID == household.householdID }) {
-                if existing.speakerAddresses != household.speakers {
-                    existing.speakerAddresses = household.speakers
+                // Merge rather than replace: a speaker missing from this read (rebooting, asleep) keeps
+                // its saved address. New and changed addresses win.
+                let merged = existing.speakerAddresses.merging(household.speakers) { _, new in new }
+                if existing.speakerAddresses != merged {
+                    existing.speakerAddresses = merged
                     networkStore.update(existing)
                 }
             } else if !covered.isDisjoint(with: household.speakers.keys) {
@@ -224,6 +245,7 @@ final class DiscoveryCoordinator: ObservableObject {
             guard let householdID = config.householdID, !reachable.contains(householdID) else { continue }
             if (try? await DirectBackend(speakers: config.speakerAddresses).topology()) != nil {
                 reachable.insert(householdID)
+                confirmedUnreachable.remove(householdID)
             } else if reachableHouseholds.contains(householdID), !confirmedUnreachable.contains(householdID) {
                 // Available until its view model confirms the silence; one missed probe isn't evidence.
                 reachable.insert(householdID)

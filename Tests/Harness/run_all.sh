@@ -69,6 +69,7 @@ serve speaker.py 18870 /dev/null       # players on 18870-18877
 serve speaker.py 18880 /dev/null       # players on 18880-18887
 serve two-groups.py 18890 /dev/null
 serve hang.py 18899
+serve refuse.py 18898 $W/refuse.log
 sleep 1
 
 run() { local name=$1; shift; echo "== $name"
@@ -92,7 +93,7 @@ run "now playing, captured states"  now-playing $H/fixtures/captured-states.json
 run "direct backend"                direct 18820
 run "direct commands"               direct-commands 18850
 run "direct presets"                direct-presets 18860
-run "watch, local network"          watch-local 18870 18899
+run "watch, local network"          watch-local 18870 18899 18898 $W/refuse.log
 run "Siri, local network"           intents-local 18880 18890
 run "iOS view model, local network" vm-local 18830
 run "discovery triggers"            discovery 18840

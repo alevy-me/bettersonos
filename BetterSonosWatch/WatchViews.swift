@@ -138,6 +138,14 @@ struct RootView: View {
         }
         Task {
             await focusSolePlayingRoom()
+            // The first reading can be slow (watch on its own Wi-Fi): wait for it before deciding.
+            if case .room(let id, _)? = path.last, let config = model.config(id: id) {
+                let controller = model.controller(for: config)
+                let deadline = Date().addingTimeInterval(20)
+                while controller.loadState == .loading, Date() < deadline {
+                    try? await Task.sleep(for: .milliseconds(250))
+                }
+            }
             leaveMissingLastRoom()
         }
     }
@@ -268,6 +276,8 @@ struct RoomView: View {
     @AppStorage("lastRoomName") private var lastRoomName = ""
     @State private var controlsGroup = false
     @State private var crownValue: Double = 0
+    /// Set by a real Crown turn, so the settle at the end of it can send the final value.
+    @State private var crownTurned = false
     @FocusState private var crownFocused: Bool
 
     private var room: RoomState? { controller.room(named: roomName) }
@@ -378,7 +388,16 @@ struct RoomView: View {
                     // A real turn has velocity. The control attaching, or the app setting the value to
                     // follow the speaker, doesn't, and must never send a volume (it once sent 0).
                     guard event.velocity != 0 else { return }
+                    crownTurned = true
                     controller.setVolume(Int(event.offset.rounded()), for: target)
+                },
+                onIdle: {
+                    // The settle at the end of a turn can arrive without velocity; send where it came to rest.
+                    // Only after a real turn, so attaching the control can never send anything.
+                    guard crownTurned else { return }
+                    crownTurned = false
+                    let final = Int(crownValue.rounded())
+                    if final != displayedVolume { controller.setVolume(final, for: target) }
                 }
             )
             .accessibilityLabel(controlsGroup && room.isGrouped ? "Group volume" : "Volume")

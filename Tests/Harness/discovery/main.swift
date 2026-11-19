@@ -13,7 +13,8 @@ let serverPort = CommandLine.arguments[1]
 
     var discoverCalls = 0
     var nextOutcome: DiscoveryOutcome = .found([household])
-    let coordinator = DiscoveryCoordinator(networkStore: store) {
+    // Outage-triggered runs are rate-limited to one per 2 s here (30 s in the app), so the test is quick.
+    let coordinator = DiscoveryCoordinator(networkStore: store, failureRetryInterval: 2) {
         discoverCalls += 1
         return nextOutcome
     }
@@ -70,13 +71,36 @@ let serverPort = CommandLine.arguments[1]
     coordinator.run(force: true)
     try? await Task.sleep(for: .seconds(2.5))
     check(coordinator.isAvailable(home), "a loaded network stays available when a discovery probe fails: not confirmed")
-    try? await Task.sleep(for: .seconds(31)) // past the 30 s cap on failure-triggered runs
+    try? await Task.sleep(for: .seconds(2.5)) // past the rate limit, and any deferred run from earlier
     NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: "Sonos_TEST")
     try? await Task.sleep(for: .seconds(2.5))
     check(!coordinator.isAvailable(home), "after its view model confirms the silence, it becomes unavailable")
     NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkReachable, object: "Sonos_TEST")
     try? await Task.sleep(for: .milliseconds(200))
     check(coordinator.isAvailable(home), "and comes back as soon as the speakers answer")
+
+    // An outage reported inside the rate limit isn't dropped: its run happens when the limit allows.
+    // (The last failure-triggered run was moments ago, so this report is inside the window.)
+    NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkReachable, object: "Sonos_TEST")
+    try? await Task.sleep(for: .milliseconds(200))
+    NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: "Sonos_TEST")
+    let runsBefore = discoverCalls
+    try? await Task.sleep(for: .milliseconds(300))
+    check(discoverCalls == runsBefore, "inside the rate limit: no immediate run")
+    try? await Task.sleep(for: .seconds(3))
+    check(discoverCalls == runsBefore + 1, "the deferred run happens once the limit allows: \(discoverCalls - runsBefore)")
+    check(!coordinator.isAvailable(home), "and it applies the confirmed outage")
+
+    // Finding the household again clears the confirmed outage, so a later single missed probe can't
+    // make it flicker.
+    nextOutcome = .found([household])
+    coordinator.run(force: true)
+    try? await Task.sleep(for: .seconds(2.5))
+    check(coordinator.isAvailable(home), "found by discovery: available again")
+    nextOutcome = .nothingFound
+    coordinator.run(force: true)
+    try? await Task.sleep(for: .seconds(2.5))
+    check(coordinator.isAvailable(home), "then one missed probe keeps it available: the confirmation was cleared")
 }
 Task { await run(); print(fails == 0 ? "ALL PASS" : "\(fails) FAILED"); exit(0) }
 RunLoop.main.run()

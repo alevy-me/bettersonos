@@ -97,6 +97,9 @@ final class WatchNetworkController: ObservableObject {
     private(set) var config: NetworkConfig
 
     private var backend: any SonosBackend { config.backend }
+    /// Speaker addresses as last synced from the phone, to tell a real phone-side change from the
+    /// watch's own learned addresses.
+    private var syncedAddresses: [String: String]
 
     static let pollInterval: Duration = .seconds(15)
     static let volumeSendDelay: Duration = .milliseconds(300)
@@ -137,13 +140,24 @@ final class WatchNetworkController: ObservableObject {
         self.configID = config.id
         self.baseURL = URLInput.normalizedBaseURL(config.baseURL)
         self.config = config
+        self.syncedAddresses = config.speakerAddresses
         self.presets = Self.loadCachedPresets(for: config.id)
     }
 
     /// Applies a newer synced copy of this network's config.
-    func update(config: NetworkConfig) {
-        guard config.id == configID, config != self.config else { return }
-        self.config = config
+    func update(config incoming: NetworkConfig) {
+        guard incoming.id == configID else { return }
+        var updated = incoming
+        if incoming.speakerAddresses == syncedAddresses {
+            // The phone's copy hasn't changed since the last sync: keep what the watch learned since.
+            updated.speakerAddresses = config.speakerAddresses
+        } else {
+            // The phone found something new; it wins, and anything the watch learned fills the gaps.
+            updated.speakerAddresses = config.speakerAddresses.merging(incoming.speakerAddresses) { _, phone in phone }
+        }
+        syncedAddresses = incoming.speakerAddresses
+        guard updated != config else { return }
+        config = updated
         publishRooms()
     }
 
@@ -215,8 +229,9 @@ final class WatchNetworkController: ObservableObject {
             while !Task.isCancelled {
                 // Optional chaining holds self only for the refresh, never across the sleep.
                 await self?.refresh(kind: .scheduled)
-                let loaded = await MainActor.run { self?.hasLoaded ?? true }
-                try? await Task.sleep(for: loaded ? Self.pollInterval : Self.firstLoadRetry)
+                // Quick retries only until the first reading settles; once Offline, back to the normal pace.
+                let firstLoad = await MainActor.run { self?.loadState == .loading }
+                try? await Task.sleep(for: firstLoad ? Self.firstLoadRetry : Self.pollInterval)
             }
         }
     }
@@ -240,8 +255,10 @@ final class WatchNetworkController: ObservableObject {
             case .success(let snapshot):
                 // Remember addresses the layout reported, so new speakers and changed addresses are
                 // reachable on the next poll even before the phone syncs them.
-                if !snapshot.addresses.isEmpty, snapshot.addresses != config.speakerAddresses {
-                    config.speakerAddresses = snapshot.addresses
+                // Merged, so a speaker missing from one read keeps its address.
+                let merged = config.speakerAddresses.merging(snapshot.addresses) { _, new in new }
+                if merged != config.speakerAddresses {
+                    config.speakerAddresses = merged
                 }
                 result = .success(snapshot.zones)
             case .failure(let error):

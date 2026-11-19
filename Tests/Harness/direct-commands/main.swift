@@ -43,6 +43,13 @@ Task {
     let alone = await zone("Kitchen")
     check(alone?.coordinator.roomName == "Kitchen" && alone?.members.count == 1, "Kitchen on its own again")
 
+    // A stopped source that isn't radio (here a Spotify Connect session the speaker won't reload) must
+    // still resume: the reload is only for radio, and Play is always sent.
+    _ = try? await SonosSOAP.call("127.0.0.1:\(base)", SonosSOAP.avTransport, "Stop", [("InstanceID", "0")])
+    check(await zone("Kitchen")?.coordinator.state.playbackState == "STOPPED", "Kitchen stopped on its Spotify session")
+    check(await backend.play(coordinator: "Kitchen"), "play on a stopped non-radio source is accepted")
+    check(await zone("Kitchen")?.coordinator.state.playbackState == "PLAYING", "and it plays, with no reload attempted")
+
     // Unknown rooms fail cleanly.
     check(await backend.setVolume(10, room: "Attic") == false, "an unknown room fails without throwing")
     print(fails == 0 ? "ALL PASS" : "\(fails) FAILED")

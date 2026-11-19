@@ -37,8 +37,9 @@ let base = CommandLine.arguments[1]
 
     // Transitions. Only scheduled polls count toward Offline; two failed in a row confirm it.
     let live = c.config
+    // The speakers "move": every known speaker is now reported at an address that doesn't answer.
     var gone = live
-    gone.speakerAddresses = ["x": "127.0.0.1:9"]
+    gone.speakerAddresses = live.speakerAddresses.mapValues { _ in "127.0.0.1:9" }
     c.update(config: gone)
     for _ in 0..<10 { await c.refresh(kind: .action) }
     check(c.loadState == .loaded && c.rooms.count == 6, "ten failed refreshes after actions change nothing: \(c.loadState)")
@@ -73,6 +74,18 @@ let base = CommandLine.arguments[1]
     c.update(config: live)
     await c.refresh(kind: .scheduled)
 
+    // Learned addresses survive a sync from the phone that didn't change them; a real phone-side change wins.
+    let learned = c.config.speakerAddresses
+    var resynced = live
+    resynced.displayName = "Home renamed"   // some other edit synced from the phone
+    c.update(config: resynced)
+    check(c.config.speakerAddresses == learned && c.config.displayName == "Home renamed", "a sync that didn't touch addresses keeps the learned ones")
+    var moved = resynced
+    moved.speakerAddresses = ["RINCON_K01400": "127.0.0.1:\(base)", "RINCON_NEW01400": "127.0.0.1:1"]
+    c.update(config: moved)
+    check(c.config.speakerAddresses["RINCON_NEW01400"] == "127.0.0.1:1" && c.config.speakerAddresses.count == learned.count + 1, "a phone-side change wins, and learned addresses fill the gaps")
+    c.update(config: live)
+
     // Away from home from the start: nothing ever read. Two failed polls (retried quickly) mean Offline.
     let away = WatchNetworkController(config: NetworkConfig.local(householdID: "Sonos_AWAY", name: "Home", speakers: ["x": "127.0.0.1:9"]))
     await away.refresh(kind: .scheduled)
@@ -86,6 +99,15 @@ let base = CommandLine.arguments[1]
     while quick.loadState != .offline && Date().timeIntervalSince(launched) < 20 { try? await Task.sleep(for: .milliseconds(200)) }
     quick.stop(); away.stop()
     check(quick.loadState == .offline && Date().timeIntervalSince(launched) < 10, "polling alone reaches Offline quickly at launch: \(String(format: "%.1f", Date().timeIntervalSince(launched)))s")
+
+    // Once Offline, polling backs off to the normal 15 s pace instead of the 3 s first-load retry.
+    let refusePort = CommandLine.arguments[3], refuseLog = CommandLine.arguments[4]
+    let backoff = WatchNetworkController(config: NetworkConfig.local(householdID: "Sonos_REFUSE", name: "Home", speakers: ["r": "127.0.0.1:\(refusePort)"]))
+    backoff.start()
+    try? await Task.sleep(for: .seconds(12))
+    backoff.stop()
+    let requests = (try? String(contentsOfFile: refuseLog, encoding: .utf8))?.split(separator: "\n").count ?? -1
+    check(backoff.loadState == .offline && requests == 2, "in 12 s: two polls to reach Offline, then none until the 15 s poll (\(requests) requests)")
 }
 Task { await run(); print(fails == 0 ? "ALL PASS" : "\(fails) FAILED"); exit(0) }
 RunLoop.main.run()

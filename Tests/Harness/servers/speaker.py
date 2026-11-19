@@ -130,8 +130,13 @@ def handler_for(uuid):
                 if action == "SnapshotGroupVolume": return self.reply(action)
                 if action == "SetGroupVolume": GROUP.setdefault(uuid, [40, False])[0] = int(arg(body, "DesiredVolume")); return self.reply(action)
                 if action == "SetGroupMute": GROUP.setdefault(uuid, [40, False])[1] = arg(body, "DesiredMute") == "1"; return self.reply(action)
+                if action == "Stop":
+                    if uuid in MEDIA: MEDIA[uuid][2] = "STOPPED"
+                    return self.reply(action)
                 if action == "SetAVTransportURI":
                     uri = arg(body, "CurrentURI")
+                    # Like real speakers, a Spotify Connect session can't be set back from its own URI.
+                    if uri.startswith("x-sonos-vli:"): return self.reply(action, {}, 500)
                     if uri.startswith("x-rincon:"):
                         COORD[uuid] = uri[len("x-rincon:"):]
                         MEDIA.pop(uuid, None)

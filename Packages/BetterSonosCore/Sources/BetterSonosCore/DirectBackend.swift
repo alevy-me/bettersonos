@@ -59,8 +59,9 @@ public struct DirectBackend: SonosBackend {
                     reasons.append(Self.describe(error))
                 }
             }
-            // Cancelled requests aren't evidence the speakers are gone, so don't report them as silence.
-            if cancelled > 0 || Task.isCancelled { throw DirectError.cancelled }
+            // A cancelled poll isn't evidence the speakers are gone. But one request cancelled for an
+            // unrelated reason mustn't hide real failures from the others: only all-cancelled counts.
+            if Task.isCancelled || (cancelled > 0 && cancelled == reasons.count) { throw DirectError.cancelled }
             throw DirectError.noSpeakerAnswered(reasons: reasons)
         }
     }
@@ -199,37 +200,59 @@ public struct DirectBackend: SonosBackend {
     }
 
     /// The household's Sonos favorites, with what's needed to play each one.
-    public func favorites() async throws -> [SonosSOAP.Favorite] {
-        let topology = try await topology()
-        guard let host = topology.groups.flatMap(\.members).first(where: \.isRoom)?.host else {
-            throw DirectError.noSpeakerAnswered(reasons: ["layout listed no speakers"])
-        }
-        let response = try await SonosSOAP.call(host, SonosSOAP.contentDirectory, "Browse", [
-            ("ObjectID", "FV:2"),
-            ("BrowseFlag", "BrowseDirectChildren"),
-            ("Filter", "*"),
-            ("StartingIndex", "0"),
-            ("RequestedCount", "200"),
-            ("SortCriteria", ""),
-        ])
-        return SonosSOAP.parseFavorites(response["Result"] ?? "")
+    /// The household's Sonos favorites with what's needed to play each one. Favorites are shared by
+    /// the household, so any speaker answers; `host` skips the search when one is already known.
+    public func favorites(from host: String? = nil) async throws -> [SonosSOAP.Favorite] {
+        let result = try await browseFavorites(filter: "*", host: host)
+        return SonosSOAP.parseFavorites(result)
     }
 
+    /// Favorite names only: what every refresh needs, without each favorite's playback metadata.
     public func favoriteNames() async throws -> [String] {
-        try await favorites().map(\.title)
+        SonosSOAP.didlTitles(try await browseFavorites(filter: "dc:title", host: nil))
+    }
+
+    /// Browses favorites on `host`, or on the first known speaker that answers, with no layout read.
+    private func browseFavorites(filter: String, host: String?) async throws -> String {
+        let arguments = [
+            ("ObjectID", "FV:2"), ("BrowseFlag", "BrowseDirectChildren"), ("Filter", filter),
+            ("StartingIndex", "0"), ("RequestedCount", "200"), ("SortCriteria", ""),
+        ]
+        let hosts = host.map { [$0] } ?? Array(Set(speakers.values))
+        guard !hosts.isEmpty else { throw DirectError.noSpeakerAnswered(reasons: ["no known speaker addresses"]) }
+        // Ask every known speaker at once and take the first answer, as the layout read does.
+        return try await withThrowingTaskGroup(of: String?.self) { group in
+            for candidate in hosts {
+                group.addTask {
+                    try? await SonosSOAP.call(candidate, SonosSOAP.contentDirectory, "Browse", arguments, timeout: SonosSOAP.layoutTimeout)["Result"]
+                }
+            }
+            for try await result in group {
+                if let result {
+                    group.cancelAll()
+                    return result
+                }
+            }
+            throw DirectError.noSpeakerAnswered(reasons: ["no speaker answered the favorites request"])
+        }
     }
 
     // MARK: - Commands
 
     /// A room's speaker and its group's coordinator, from the current layout. Rooms are named as the
     /// speakers name them; the visible speaker of a stereo pair is the one that takes commands.
-    private func locate(_ roomName: String) async throws -> (room: SonosSOAP.Topology.Member, coordinator: SonosSOAP.Topology.Member, topology: SonosSOAP.Topology) {
-        let topology = try await topology()
+    private func locate(_ roomName: String) async throws -> (room: SonosSOAP.Topology.Member, coordinator: SonosSOAP.Topology.Member) {
+        try Self.locate(roomName, in: try await topology())
+    }
+
+    /// A room and its group's coordinator within a layout already read, so a command that needs
+    /// several rooms reads the layout once.
+    private static func locate(_ roomName: String, in topology: SonosSOAP.Topology) throws -> (room: SonosSOAP.Topology.Member, coordinator: SonosSOAP.Topology.Member) {
         for group in topology.groups {
             let rooms = group.members.filter(\.isRoom)
             if let room = rooms.first(where: { $0.roomName == roomName }),
                let coordinator = rooms.first(where: { $0.uuid == group.coordinator }) {
-                return (room, coordinator, topology)
+                return (room, coordinator)
             }
         }
         throw DirectError.roomNotFound(roomName)
@@ -250,14 +273,21 @@ public struct DirectBackend: SonosBackend {
         await attempt {
             let target = try await locate(coordinator).coordinator
             let transport = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "GetTransportInfo", [Self.instance])
-            if transport["CurrentTransportState"] == "STOPPED" {
-                let media = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "GetMediaInfo", [Self.instance])
-                if let uri = media["CurrentURI"], !uri.isEmpty, !uri.hasPrefix("x-rincon:"), !uri.hasPrefix("x-rincon-queue:") {
-                    try await setTransport(target.host, uri: uri, metadata: media["CurrentURIMetaData"] ?? "")
-                }
+            if transport["CurrentTransportState"] == "STOPPED",
+               let media = try? await SonosSOAP.call(target.host, SonosSOAP.avTransport, "GetMediaInfo", [Self.instance]),
+               let uri = media["CurrentURI"], Self.isReloadableStream(uri) {
+                // Best effort: if the speaker won't take the stream back, Play is still sent.
+                try? await setTransport(target.host, uri: uri, metadata: media["CurrentURIMetaData"] ?? "")
             }
             _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "Play", [Self.instance, ("Speed", "1")])
         }
+    }
+
+    /// Live radio stops rather than pausing and may need reloading to restart. Other sources (Spotify
+    /// Connect sessions, TV audio, queues) resume with Play and may refuse a reload, so they're left alone.
+    static func isReloadableStream(_ uri: String) -> Bool {
+        let lower = uri.lowercased()
+        return ["x-sonosapi-stream:", "x-rincon-mp3radio:", "x-sonosapi-radio:", "hls-radio:", "aac:"].contains { lower.hasPrefix($0) }
     }
 
     private func setTransport(_ host: String, uri: String, metadata: String) async throws {
@@ -308,9 +338,10 @@ public struct DirectBackend: SonosBackend {
 
     @discardableResult public func join(room: String, to target: String) async -> Bool {
         await attempt {
-            let joiner = try await locate(room).room
+            let topology = try await topology()
+            let joiner = try Self.locate(room, in: topology).room
             // Join the target room's group, through that group's coordinator.
-            let leader = try await locate(target).coordinator
+            let leader = try Self.locate(target, in: topology).coordinator
             guard joiner.uuid != leader.uuid else { return }
             _ = try await SonosSOAP.call(joiner.host, SonosSOAP.avTransport, "SetAVTransportURI",
                                          [Self.instance, ("CurrentURI", "x-rincon:\(leader.uuid)"), ("CurrentURIMetaData", "")])
@@ -334,7 +365,7 @@ public struct DirectBackend: SonosBackend {
         await attempt {
             let target = try await locate(coordinator).coordinator
             if station.isFavorite {
-                let favorites = try await favorites()
+                let favorites = try await favorites(from: target.host)
                 guard let favorite = favorites.first(where: { $0.title == station.url })
                         ?? favorites.first(where: { $0.title.caseInsensitiveCompare(station.url) == .orderedSame }) else {
                     throw DirectError.favoriteNotFound(station.url)

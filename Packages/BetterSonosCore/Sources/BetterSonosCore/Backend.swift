@@ -102,9 +102,14 @@ public struct ServerBackend: SonosBackend {
 }
 
 extension NetworkConfig {
-    /// The backend for this network: the speakers themselves for a local network, otherwise the server.
+    /// The backend for this network: the speakers themselves for a local network, both for a hybrid
+    /// network (direct at home, server away), otherwise the server.
     public var backend: any SonosBackend {
-        isLocal ? DirectBackend(speakers: speakerAddresses) : ServerBackend(baseURL: baseURL)
+        if isLocal { return DirectBackend(speakers: speakerAddresses) }
+        if isHybrid {
+            return HybridBackend(networkID: id, direct: DirectBackend(speakers: speakerAddresses), server: ServerBackend(baseURL: baseURL))
+        }
+        return ServerBackend(baseURL: baseURL)
     }
 }
 

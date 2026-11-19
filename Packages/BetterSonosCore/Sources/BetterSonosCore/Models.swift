@@ -102,10 +102,25 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
     /// Last known speaker addresses ("192.168.1.20:1400") by player ID, for direct control.
     public var speakerAddresses: [String: String] = [:]
 
+    /// For a server network that also knows its household: control the speakers directly when they're
+    /// reachable (at home), and use the server otherwise. The user can turn it off in Settings.
+    public var directControlEnabled: Bool = true
+
+    public var hasServer: Bool { !baseURL.trimmingCharacters(in: .whitespaces).isEmpty }
+
     /// A network discovered on the local network and controlled directly, with no server.
     public var isLocal: Bool {
-        householdID != nil && baseURL.trimmingCharacters(in: .whitespaces).isEmpty
+        householdID != nil && !hasServer
     }
+
+    /// A server network merged with its household: direct at home, server away.
+    public var isHybrid: Bool {
+        householdID != nil && hasServer && directControlEnabled
+    }
+
+    /// Either way of talking to the speakers directly is in play, so reachability follows the
+    /// speakers' own answers (missed-poll counting) rather than a single server request.
+    public var usesDirectControl: Bool { isLocal || isHybrid }
 
     enum CodingKeys: String, CodingKey {
         case id, displayName, baseURL, enabled
@@ -118,6 +133,7 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
         case manuallyDisabledVolumeUUIDs
         case householdID
         case speakerAddresses
+        case directControlEnabled
     }
 
     public init(id: UUID, displayName: String, baseURL: String, enabled: Bool, showDefaultPresetsForThisNetwork: Bool, explicitlyDisabledFavoriteURLs: Set<String> = [], lastKnownServerFavorites: [Station]? = nil, enabledLineInUUIDs: Set<String> = [], lineInCustomNames: [String: String] = [:], manuallyDisabledVolumeUUIDs: Set<String> = [], lastModified: Date = Date()) {
@@ -151,6 +167,15 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
         manuallyDisabledVolumeUUIDs = try container.decodeIfPresent(Set<String>.self, forKey: .manuallyDisabledVolumeUUIDs) ?? []
         householdID = try container.decodeIfPresent(String.self, forKey: .householdID)
         speakerAddresses = try container.decodeIfPresent([String: String].self, forKey: .speakerAddresses) ?? [:]
+        directControlEnabled = try container.decodeIfPresent(Bool.self, forKey: .directControlEnabled) ?? true
+    }
+
+    /// The first network in `configs` that a server's speakers belong to: a server can only control
+    /// speakers of one household, and player IDs are hardware-unique, so every one of the server's
+    /// players being in the household is strong evidence they're the same system. `householdPlayers`
+    /// are the household's player IDs (from its layout or saved addresses).
+    public static func serverMatches(serverPlayers: Set<String>, householdPlayers: Set<String>) -> Bool {
+        !serverPlayers.isEmpty && serverPlayers.isSubset(of: householdPlayers)
     }
 
     /// A local network for a discovered household. The id is derived from the household ID, so every

@@ -210,7 +210,7 @@ struct NetworkSettingsModal: View {
                         VStack(alignment: .leading) {
                             Text(config.displayName)
                                 .font(.headline)
-                            Text(config.isLocal ? "On this Wi-Fi, no server" : config.baseURL)
+                            Text(networkSubtitle(config))
                                 .font(.subheadline)
                                 .foregroundColor(.secondary)
                         }
@@ -236,6 +236,13 @@ struct NetworkSettingsModal: View {
         }
     }
     
+    private func networkSubtitle(_ config: NetworkConfig) -> String {
+        if config.isLocal { return "On this Wi-Fi, no server" }
+        let host = URL(string: config.baseURL)?.host ?? config.baseURL
+        if config.isHybrid { return "Direct at home, \(host) away" }
+        return config.baseURL
+    }
+
     private static func newConfig() -> NetworkConfig {
         NetworkConfig(
             id: UUID(),

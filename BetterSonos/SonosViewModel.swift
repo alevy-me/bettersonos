@@ -62,6 +62,12 @@ final class SonosViewModel: ObservableObject {
     private var reportedUnreachable = false
     /// A local network talks to the speakers directly: no server, so no SSE, and a faster poll instead.
     private let isLocal: Bool
+    /// Local or hybrid: the speakers are reached directly at least some of the time, so reachability
+    /// follows their answers (missed-poll counting). Read live, since a server network can gain its
+    /// household while this view model is running.
+    private var usesDirectControl: Bool { currentConfig?.usesDirectControl ?? isLocal }
+    /// The server's live event stream is connected. A hybrid network then polls only as a backstop.
+    private var sseConnected = false
     private let networkStore: NetworkConfigStore
     private let settingsStore: AppSettingsStore
     private var cancellables = Set<AnyCancellable>()
@@ -229,11 +235,14 @@ final class SonosViewModel: ObservableObject {
         let backend = self.backend
         log.debug("Refreshing \(self.baseURL, privacy: .public)")
         // Zones drive the UI; favorites are independent, so a favorites failure never blocks zone state.
-        // A local network also reports every speaker address its layout lists, for saving.
+        // Reading the speakers directly also reports every address their layout lists, for saving.
         async let zonesResult = Result(asyncCatching: { () -> (zones: [Zone], addresses: [String: String]?) in
             if let direct = backend as? DirectBackend {
                 let snapshot = try await direct.snapshot()
                 return (snapshot.zones, snapshot.addresses)
+            }
+            if let hybrid = backend as? HybridBackend {
+                return try await hybrid.snapshot()
             }
             return (try await backend.zones(), nil)
         })
@@ -260,15 +269,17 @@ final class SonosViewModel: ObservableObject {
             // Report what the speakers report. On a local network, a failed refresh changes nothing until
             // the silence is confirmed: three failed scheduled polls in a row. Refreshes after actions
             // never count.
-            if isLocal {
+            if usesDirectControl {
                 if kind == .scheduled { failedScheduledPolls += 1 }
                 let confirmed = failedScheduledPolls >= Self.unavailableAfterFailedPolls
                 if confirmed, generation > appliedRefreshGeneration {
-                    refreshError = "Can't reach your speakers. Make sure you're on the same Wi-Fi as your Sonos system."
+                    refreshError = isLocal
+                        ? "Can't reach your speakers. Make sure you're on the same Wi-Fi as your Sonos system."
+                        : "Can't reach your speakers directly or through the server."
                 }
                 // Confirmed silence: speakers may have new addresses, or you've left. Discovery looks again
                 // and decides availability (it debounces).
-                if confirmed, !reportedUnreachable, let householdID = currentConfig?.householdID {
+                if isLocal, confirmed, !reportedUnreachable, let householdID = currentConfig?.householdID {
                     reportedUnreachable = true
                     NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: householdID)
                 }
@@ -303,7 +314,7 @@ final class SonosViewModel: ObservableObject {
     /// addresses reach the watch and other devices without waiting for discovery. Merged, not replaced:
     /// a speaker missing from one read (rebooting, asleep) keeps its saved address.
     private func saveLearnedAddresses(_ addresses: [String: String]) {
-        guard isLocal, !addresses.isEmpty, var config = currentConfig else { return }
+        guard usesDirectControl, !addresses.isEmpty, var config = currentConfig else { return }
         let merged = config.speakerAddresses.merging(addresses) { _, new in new }
         guard merged != config.speakerAddresses else { return }
         config.speakerAddresses = merged
@@ -619,6 +630,10 @@ final class SonosViewModel: ObservableObject {
     private func sseDidConnect() {
         log.info("[SSE] Connected.")
         retryAttempts = 0
+        if !sseConnected {
+            sseConnected = true
+            if usesDirectControl { startPolling() } // relax to the backstop interval
+        }
         if sseError != nil {
             sseError = nil
             updateStatus()
@@ -635,6 +650,10 @@ final class SonosViewModel: ObservableObject {
     }
 
     private func sseDidEnd(established: Bool, error: Error?) {
+        if sseConnected {
+            sseConnected = false
+            if usesDirectControl { startPolling() } // no change signal now: poll at the fast pace
+        }
         let delay: TimeInterval
         let isIdleTimeout = (error as? URLError)?.code == .timedOut
         if established || isIdleTimeout {
@@ -672,7 +691,14 @@ final class SonosViewModel: ObservableObject {
 
     /// Polls independently of SSE, so a flapping stream can never starve the poll.
     /// Server networks get live updates over SSE and poll only as a backstop; local networks rely on polling.
-    private var pollInterval: TimeInterval { isLocal ? Constants.localPollInterval : Constants.pollInterval }
+    /// Local: always the fast poll (no event stream). Hybrid: the slow backstop while the server's event
+    /// stream is connected (it signals changes; reads still go direct at home), the fast poll otherwise.
+    /// Server: the slow backstop.
+    private var pollInterval: TimeInterval {
+        if isLocal { return Constants.localPollInterval }
+        if usesDirectControl { return sseConnected ? Constants.pollInterval : Constants.localPollInterval }
+        return Constants.pollInterval
+    }
 
     private func startPolling() {
         pollTask?.cancel()

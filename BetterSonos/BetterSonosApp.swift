@@ -93,6 +93,23 @@ struct BetterSonosView: View {
         .sheet(item: $discovery.householdToName) { household in
             NameHouseholdSheet(household: household)
         }
+        // Server first, then discovery: the merge already happened; say so once, and point at the switch.
+        .alert(
+            "Direct Control On",
+            isPresented: Binding(
+                get: { discovery.mergeNotice != nil },
+                set: { if !$0 { discovery.mergeNotice = nil } }
+            ),
+            presenting: discovery.mergeNotice
+        ) { _ in
+            Button("OK", role: .cancel) { discovery.mergeNotice = nil }
+            Button("Open Settings") {
+                discovery.mergeNotice = nil
+                showSettings = true
+            }
+        } message: { notice in
+            Text("BonTon found your \(notice.networkName) speakers on this Wi-Fi. It now controls them directly when you're home, and uses your server when you're away. You can turn this off in Settings > \(notice.networkName).")
+        }
         .sheet(isPresented: $showSettings) {
                 NetworkSettingsModal(isPresented: $showSettings)
                 // EnvironmentObjects (networkStore and settingsStore)

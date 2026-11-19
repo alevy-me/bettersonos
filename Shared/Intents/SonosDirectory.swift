@@ -38,9 +38,24 @@ enum SonosDirectory {
         var isPlaying: Bool { SonosDirectory.isPlaying(coordinator) }
     }
 
+    private static let pathLock = NSLock()
+    nonisolated(unsafe) private static var lastPathReset = Date.distantPast
+
+    /// Each Siri request is a fresh question: let hybrid networks choose their path afresh (asking the
+    /// speakers and the server at once), at most every 10 s so one request's several lookups share it.
+    static func beginRequest() {
+        let reset = pathLock.withLock { () -> Bool in
+            guard Date().timeIntervalSince(lastPathReset) > 10 else { return false }
+            lastPathReset = Date()
+            return true
+        }
+        if reset { HybridPathCache.shared.invalidateAll() }
+    }
+
     static func enabledConfigs() -> [NetworkConfig] {
+        beginRequest()
         // Read-only: Siri must never write configs back to iCloud.
-        NetworkConfigStore(cloudReadOnly: true).configs.filter(\.enabled)
+        return NetworkConfigStore(cloudReadOnly: true).configs.filter(\.enabled)
     }
 
     static func isPlaying(_ member: Member) -> Bool {

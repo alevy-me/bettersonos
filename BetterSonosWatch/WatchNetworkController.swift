@@ -250,15 +250,23 @@ final class WatchNetworkController: ObservableObject {
         let generation = refreshGeneration
         let backend = self.backend
         let result: Result<[Zone], Error>
+        let snapshotSource: (() async throws -> (zones: [Zone], addresses: [String: String]?))?
         if let direct = backend as? DirectBackend {
-            switch await Result(asyncCatching: { try await direct.snapshot() }) {
+            snapshotSource = { let s = try await direct.snapshot(); return (s.zones, s.addresses) }
+        } else if let hybrid = backend as? HybridBackend {
+            snapshotSource = { try await hybrid.snapshot() }
+        } else {
+            snapshotSource = nil
+        }
+        if let snapshotSource {
+            switch await Result(asyncCatching: snapshotSource) {
             case .success(let snapshot):
                 // Remember addresses the layout reported, so new speakers and changed addresses are
-                // reachable on the next poll even before the phone syncs them.
-                // Merged, so a speaker missing from one read keeps its address.
-                let merged = config.speakerAddresses.merging(snapshot.addresses) { _, new in new }
-                if merged != config.speakerAddresses {
-                    config.speakerAddresses = merged
+                // reachable on the next poll even before the phone syncs them. Merged, so a speaker
+                // missing from one read keeps its address.
+                if let addresses = snapshot.addresses {
+                    let merged = config.speakerAddresses.merging(addresses) { _, new in new }
+                    if merged != config.speakerAddresses { config.speakerAddresses = merged }
                 }
                 result = .success(snapshot.zones)
             case .failure(let error):

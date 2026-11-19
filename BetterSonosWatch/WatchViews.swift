@@ -175,7 +175,7 @@ private struct RoomList: View {
             case .loaded:
                 EmptyView()
             case .offline:
-                OfflineMessage(alignment: .leading) { Task { await controller.refresh() } }
+                OfflineMessage(alignment: .leading, hasServer: config.hasServer) { Task { await controller.refresh() } }
             case .stale(let message):
                 ErrorRow(message: message, isStale: true) { Task { await controller.refresh() } }
             case .failed(let message):
@@ -226,13 +226,17 @@ private struct RoomRow: View {
 /// you're home, the phone has to find them (new addresses reach the watch through iCloud).
 private struct OfflineMessage: View {
     let alignment: HorizontalAlignment
+    /// A merged network has a server too: then neither path answered, and the iPhone can't help.
+    var hasServer = false
     let retry: () -> Void
 
     var body: some View {
         VStack(alignment: alignment, spacing: 4) {
             Label("Offline", systemImage: "wifi.slash")
                 .font(.footnote)
-            Text("These speakers can't be reached from here. At home? Open BonTon on your iPhone to find them.")
+            Text(hasServer
+                 ? "Can't reach these speakers directly or through the server."
+                 : "These speakers can't be reached from here. At home? Open BonTon on your iPhone to find them.")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(alignment == .center ? .center : .leading)
@@ -309,7 +313,7 @@ struct RoomView: View {
                 case .loading:
                     ProgressView()
                 case .offline:
-                    OfflineMessage(alignment: .center) { Task { await controller.refresh() } }
+                    OfflineMessage(alignment: .center, hasServer: controller.config.hasServer) { Task { await controller.refresh() } }
                 case .failed(let message):
                     VStack(spacing: 8) {
                         Text(message).font(.footnote).multilineTextAlignment(.center)

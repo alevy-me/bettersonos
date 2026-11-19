@@ -34,6 +34,10 @@ struct NetworkEditModal: View {
     var onDelete: (() -> Void)?   // Only non-nil if editing existing
 
     @EnvironmentObject var settingsStore: AppSettingsStore // To access
+    @EnvironmentObject var networkStore: NetworkConfigStore
+    /// Adding a server whose speakers all belong to an existing local network: saving adds the server to
+    /// that network (it keeps its name and settings) instead of creating a second one.
+    @State private var matchedLocalNetwork: NetworkConfig?
     @State private var baseScheme: String
     @State private var baseAddress: String // For the host and path part of the baseURL
     @State private var error: String?
@@ -76,6 +80,17 @@ struct NetworkEditModal: View {
 
     /// Default presets are forced on when this network would otherwise have no presets at all.
     /// Uses the favorites fetched in this sheet, so a new network is evaluated against its real favorites.
+    /// What the direct-control switch does, and which way the network is reaching its speakers now.
+    private var directControlFooter: String {
+        let now: String
+        switch HybridPathCache.shared.path(for: editedConfig.id) {
+        case .direct?: now = " Right now: directly."
+        case .server?: now = " Right now: through the server."
+        case nil: now = ""
+        }
+        return "When on, BonTon talks to the speakers directly while you're on their Wi-Fi, and uses the server when you're away." + (editedConfig.directControlEnabled ? now : "")
+    }
+
     private var isForcedDefaultNetwork: Bool {
         NetworkConfig.isForcedDefault(
             remoteCSVURL: settingsStore.remoteCSVURL,
@@ -108,8 +123,10 @@ struct NetworkEditModal: View {
     var body: some View {
         NavigationView {
             Form {
-                Section(header: Text("Display Name")) {
-                    TextField("e.g. Home, Country, Beach", text: $editedConfig.displayName)
+                if matchedLocalNetwork == nil {
+                    Section(header: Text("Display Name")) {
+                        TextField("e.g. Home, Country, Beach", text: $editedConfig.displayName)
+                    }
                 }
                 Section(header: Text("Base URL")) {
                     HStack(spacing: 0) {
@@ -127,6 +144,13 @@ struct NetworkEditModal: View {
                                             .disableAutocorrection(true)
                                     }
                 }
+                if let match = matchedLocalNetwork {
+                    Section {
+                        Label("This server controls your \(match.displayName) speakers.", systemImage: "link")
+                    } footer: {
+                        Text("Saving adds it to \(match.displayName), so BonTon can reach those speakers when you're away. \(match.displayName) keeps its name and settings.")
+                    }
+                } else {
                 Section(header: Text("Default Presets")) {
                                 Toggle("Include Default Presets", isOn: Binding(
                                     get: { effectiveShowDefaultPresetsForThisNetwork },
@@ -284,6 +308,16 @@ struct NetworkEditModal: View {
                         }
                     }
                 }
+                } // matchedLocalNetwork == nil
+                if isEditing, editedConfig.householdID != nil, editedConfig.hasServer {
+                    Section {
+                        Toggle("Control Speakers Directly at Home", isOn: $editedConfig.directControlEnabled)
+                    } header: {
+                        Text("Direct Control")
+                    } footer: {
+                        Text(directControlFooter)
+                    }
+                }
                 if let error = error {
                     Section {
                         Text(error)
@@ -315,6 +349,16 @@ struct NetworkEditModal: View {
                             Task { await fetchFavoritesIfNeeded() }
                         }
                     }
+            // Adding a server: contact it shortly after typing stops, so a match with an existing local
+            // network shows up before anything else is set.
+            .task(id: baseAddress) {
+                guard !isEditing else { return }
+                matchedLocalNetwork = nil
+                guard !baseAddress.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+                try? await Task.sleep(for: .milliseconds(800))
+                guard !Task.isCancelled else { return }
+                await fetchFavoritesIfNeeded()
+            }
             .navigationTitle(isEditing ? "Edit Network" : "Add Network")
             .toolbar {
                 ToolbarItem(placement: .navigationBarLeading) {
@@ -322,6 +366,14 @@ struct NetworkEditModal: View {
                 }
                 ToolbarItem(placement: .navigationBarTrailing) {
                     Button("Save") {
+                        if let match = matchedLocalNetwork, let serverURL = constructedFullBaseURL {
+                            // Same speakers as an existing local network: add the server to it.
+                            var merged = match
+                            merged.baseURL = serverURL
+                            merged.directControlEnabled = true
+                            onSave(merged)
+                            return
+                        }
                         guard !editedConfig.displayName.trimmingCharacters(in: .whitespaces).isEmpty else {
                             error = "Display name is required."
                             return
@@ -396,6 +448,15 @@ struct NetworkEditModal: View {
 
         do {
             let zones = try await ServerBackend(baseURL: currentFullBaseURL).zones()
+
+            // A new server whose every speaker belongs to an existing local network is that network.
+            // Player IDs don't change, so the saved ones are good evidence even when away from home.
+            if !isEditing {
+                let serverPlayers = Set(zones.flatMap { [$0.coordinator.uuid] + $0.members.map(\.uuid) })
+                matchedLocalNetwork = networkStore.configs.first {
+                    $0.isLocal && NetworkConfig.serverMatches(serverPlayers: serverPlayers, householdPlayers: Set($0.speakerAddresses.keys))
+                }
+            }
 
             var uniquePlayers: [String: String] = [:] // UUID: roomName
             for zone in zones {

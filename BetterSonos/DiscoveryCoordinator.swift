@@ -42,6 +42,14 @@ final class DiscoveryCoordinator: ObservableObject {
     @Published private(set) var permissionDenied = false
     /// A household waiting for the user to name it.
     @Published var householdToName: DiscoveredHousehold?
+
+    /// A server network that was just merged with its household (server first, then discovery), so the
+    /// user can be told once, on this device, and pointed at the switch.
+    struct MergeNotice: Identifiable, Equatable {
+        let id: UUID
+        let networkName: String
+    }
+    @Published var mergeNotice: MergeNotice?
     /// Household IDs of local networks reachable right now.
     @Published private(set) var reachableHouseholds: Set<String> = []
 
@@ -92,6 +100,8 @@ final class DiscoveryCoordinator: ObservableObject {
                 guard let self else { return }
                 defer { self.lastPathSignature = signature }
                 if let last = self.lastPathSignature, last != signature {
+                    // Home or away may have changed: hybrid networks choose their path afresh.
+                    HybridPathCache.shared.invalidateAll()
                     self.request(force: true)
                 }
             }
@@ -117,6 +127,7 @@ final class DiscoveryCoordinator: ObservableObject {
         NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
             .sink { [weak self] _ in
                 guard let self else { return }
+                HybridPathCache.shared.invalidateAll()
                 self.request(force: self.needsAttention)
             }
             .store(in: &cancellables)
@@ -217,11 +228,31 @@ final class DiscoveryCoordinator: ObservableObject {
     /// same results after the list changes.
     private func evaluate(_ households: [DiscoveredHousehold]) async {
         var reachable = Set<String>()
-        let covered = await playersCoveredByServerNetworks()
+        let serverPlayers = await playersByServerNetwork()
+        let covered = serverPlayers.reduce(into: Set<String>()) { $0.formUnion($1.players) }
         for household in households {
             reachable.insert(household.householdID)
             // Found by Bonjour: whatever confirmed an outage before, the speakers are answering now.
             confirmedUnreachable.remove(household.householdID)
+            let householdPlayers = Set(household.speakers.keys)
+            // A server network whose every speaker belongs to this household is the same system: merge it
+            // (it keeps its name and settings, and gains direct control at home). The first match wins.
+            // Only once per household: if a server network already holds it (merged earlier, even with
+            // direct control switched off), other matching servers are left alone.
+            let alreadyMerged = networkStore.configs.contains { $0.hasServer && $0.householdID == household.householdID }
+            let match = alreadyMerged ? nil : serverPlayers.first { NetworkConfig.serverMatches(serverPlayers: $0.players, householdPlayers: householdPlayers) }
+            if let match, var server = networkStore.configs.first(where: { $0.id == match.id }), server.householdID == nil {
+                server.householdID = household.householdID
+                server.speakerAddresses = household.speakers
+                server.directControlEnabled = true
+                networkStore.update(server)
+                // A separate local network for the same household (both existed) folds into the server one.
+                for local in networkStore.configs where local.isLocal && local.householdID == household.householdID {
+                    networkStore.remove(local)
+                }
+                mergeNotice = MergeNotice(id: server.id, networkName: server.displayName)
+                continue
+            }
             if var existing = networkStore.configs.first(where: { $0.householdID == household.householdID }) {
                 // Merge rather than replace: a speaker missing from this read (rebooting, asleep) keeps
                 // its saved address. New and changed addresses win.
@@ -231,8 +262,8 @@ final class DiscoveryCoordinator: ObservableObject {
                     networkStore.update(existing)
                 }
             } else if !covered.isDisjoint(with: household.speakers.keys) {
-                // Already reachable through an enabled server network. Merging the two into one
-                // network is direct-control phase 5; until then, offering it again would list it twice.
+                // Some speakers are reachable through a server network, but not all of its speakers are in
+                // this household: not provably the same system, so neither merge nor offer a duplicate.
                 continue
             } else if !dismissedHouseholds.contains(household.householdID),
                       !queuedHouseholds.contains(household), householdToName?.householdID != household.householdID {
@@ -256,20 +287,27 @@ final class DiscoveryCoordinator: ObservableObject {
     }
 
     /// Player IDs of every speaker that an enabled server network can see right now.
-    private func playersCoveredByServerNetworks() async -> Set<String> {
-        let servers = networkStore.configs.filter { $0.enabled && !$0.isLocal }
-        return await withTaskGroup(of: [String].self) { group in
+    /// Each enabled server-only network's speakers, as its server reports them right now. A server that
+    /// doesn't answer reports nothing, so it can't be matched (no guessing from saved data). Networks
+    /// already holding a household, or with direct control switched off, are left alone.
+    private func playersByServerNetwork() async -> [(id: UUID, players: Set<String>)] {
+        let servers = networkStore.configs.filter { $0.enabled && $0.hasServer && $0.householdID == nil }
+        let order = servers.map(\.id)
+        let found = await withTaskGroup(of: (UUID, Set<String>).self) { group in
             for config in servers {
-                let backend = config.backend
+                let backend = ServerBackend(baseURL: config.baseURL)
+                let id = config.id
                 group.addTask {
                     let zones = (try? await backend.zones()) ?? []
-                    return zones.flatMap { [$0.coordinator.uuid] + $0.members.map(\.uuid) }
+                    return (id, Set(zones.flatMap { [$0.coordinator.uuid] + $0.members.map(\.uuid) }))
                 }
             }
-            var players = Set<String>()
-            for await uuids in group { players.formUnion(uuids) }
-            return players
+            var result: [UUID: Set<String>] = [:]
+            for await (id, players) in group where !players.isEmpty { result[id] = players }
+            return result
         }
+        // Keep the network list's order, so "the first match" is stable.
+        return order.compactMap { id in found[id].map { (id, $0) } }
     }
 
     // MARK: - Naming

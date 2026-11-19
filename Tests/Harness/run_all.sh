@@ -43,10 +43,12 @@ build now-playing   $H/now-playing/main.swift
 build direct        $H/direct/main.swift
 build direct-commands $H/direct-commands/main.swift
 build direct-presets $H/direct-presets/main.swift
+build hybrid        $H/hybrid/main.swift
 build vm-local      SonosViewModel.swift $H/stub.swift $H/discovery-stub.swift $H/shim.swift $H/vm-local/main.swift
 strip $R/BetterSonos/SonosDiscovery.swift > SonosDiscovery.swift
 strip $R/BetterSonos/DiscoveryCoordinator.swift > DiscoveryCoordinator.swift
 build discovery     SonosDiscovery.swift DiscoveryCoordinator.swift $H/shim.swift $H/discovery/main.swift
+build merge         SonosDiscovery.swift DiscoveryCoordinator.swift $H/shim.swift $H/merge/main.swift
 
 pids=()
 serve() { python3 -I $H/servers/$1 $2 "${@:3}" >/dev/null 2>&1 & pids+=($!); }
@@ -70,6 +72,10 @@ serve speaker.py 18880 /dev/null       # players on 18880-18887
 serve two-groups.py 18890 /dev/null
 serve hang.py 18899
 serve refuse.py 18898 $W/refuse.log
+serve speaker.py 18900 /dev/null       # players on 18900-18908
+serve grouped.py 18910 /dev/null
+serve two-groups.py 18911 /dev/null
+serve two-groups.py 18912 /dev/null
 sleep 1
 
 run() { local name=$1; shift; echo "== $name"
@@ -97,6 +103,8 @@ run "watch, local network"          watch-local 18870 18899 18898 $W/refuse.log
 run "Siri, local network"           intents-local 18880 18890
 run "iOS view model, local network" vm-local 18830
 run "discovery triggers"            discovery 18840
+run "hybrid backend"                hybrid 18900 18910
+run "merging server and local"      merge 18911 18912
 
 echo
 [ $failed -eq 0 ] && echo "ALL TESTS PASSED" || { echo "SOME TESTS FAILED"; exit 1; }

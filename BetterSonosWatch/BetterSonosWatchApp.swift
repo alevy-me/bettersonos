@@ -102,6 +102,9 @@ final class WatchModel: ObservableObject {
     func setActive(_ active: Bool) {
         guard active != isActive else { return }
         isActive = active
+        // The watch gets no network-change events, so returning to the app is the moment to let hybrid
+        // networks choose their path afresh (you may have left home or come back).
+        if active { HybridPathCache.shared.invalidateAll() }
         for controller in controllers.values {
             if active { controller.start() } else { controller.stop() }
         }

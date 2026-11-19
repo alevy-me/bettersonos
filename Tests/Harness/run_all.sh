@@ -21,6 +21,7 @@ L=(-I mod -L mod -lBetterSonosCore -Xlinker -rpath -Xlinker $W/mod)
 strip() { sed -e 's/Bundle.main.bundleIdentifier ?? "BetterSonosWatch"/"test"/; s/Bundle.main.bundleIdentifier!/"test"/' "$1"; }
 strip $R/BetterSonos/SonosViewModel.swift > SonosViewModel.swift
 strip $R/BetterSonosWatch/WatchNetworkController.swift > WatchNetworkController.swift
+cp $R/BetterSonosWatch/WatchDiagnostics.swift WatchDiagnostics.swift
 INTENTS=($R/Shared/Intents/SonosDirectory.swift $R/Shared/Intents/SonosEntities.swift $R/Shared/Intents/SonosIntents.swift)
 
 failed=0
@@ -29,12 +30,14 @@ build() { local out=$1; shift
           [ -n "$err" ] && { echo "BUILD FAILED $out:\n$err"; failed=1; rm -f $out; } }
 build models        $H/models/main.swift
 build vm            SonosViewModel.swift $H/stub.swift $H/discovery-stub.swift $H/shim.swift $H/vm/main.swift
-build watch         WatchNetworkController.swift $H/stub.swift $H/watch/main.swift
-build watch-dealloc WatchNetworkController.swift $H/stub.swift $H/watch-dealloc/main.swift
-build sole-playing  WatchNetworkController.swift $H/stub.swift $H/sole-playing/main.swift
-build presets       WatchNetworkController.swift $H/stub.swift $H/presets/main.swift
-build radio-watch   WatchNetworkController.swift $H/stub.swift $H/radio-watch/main.swift
+build watch         WatchNetworkController.swift WatchDiagnostics.swift $H/stub.swift $H/watch/main.swift
+build watch-local   WatchNetworkController.swift WatchDiagnostics.swift $H/stub.swift $H/watch-local/main.swift
+build watch-dealloc WatchNetworkController.swift WatchDiagnostics.swift $H/stub.swift $H/watch-dealloc/main.swift
+build sole-playing  WatchNetworkController.swift WatchDiagnostics.swift $H/stub.swift $H/sole-playing/main.swift
+build presets       WatchNetworkController.swift WatchDiagnostics.swift $H/stub.swift $H/presets/main.swift
+build radio-watch   WatchNetworkController.swift WatchDiagnostics.swift $H/stub.swift $H/radio-watch/main.swift
 build intents       ${INTENTS[@]} $H/stub.swift $H/intents/main.swift
+build intents-local ${INTENTS[@]} $H/stub.swift $H/intents-local/main.swift
 build radio-siri    ${INTENTS[@]} $H/stub.swift $H/radio-siri/main.swift
 build now-playing   $H/now-playing/main.swift
 build direct        $H/direct/main.swift
@@ -62,13 +65,19 @@ serve speaker.py 18830 /dev/null       # players on 18830-18837
 serve grouped.py 18840 /dev/null
 serve speaker.py 18850 /dev/null       # players on 18850-18857
 serve speaker.py 18860 /dev/null       # players on 18860-18867
+serve speaker.py 18870 /dev/null       # players on 18870-18877
+serve speaker.py 18880 /dev/null       # players on 18880-18887
+serve two-groups.py 18890 /dev/null
+serve hang.py 18899
 sleep 1
 
 run() { local name=$1; shift; echo "== $name"
         [ -x ./$1 ] || { echo "SKIPPED (did not build)"; failed=1; return; }
         local out; out=$(perl -e 'alarm shift; exec @ARGV' 90 ./"$@" 2>/dev/null); local code=$?
         print -r -- "$out" | grep -E "PASS|FAIL|ALL |MATCH|status:|deallocated"
-        [ $code -eq 142 ] && { echo "TIMED OUT"; failed=1; }
+        # A crash loses buffered output, so a missing FAIL line proves nothing: the exit status decides.
+        if [ $code -eq 142 ]; then echo "TIMED OUT"; failed=1
+        elif [ $code -ne 0 ]; then echo "CRASHED (exit $code)"; failed=1; fi
         print -r -- "$out" | grep -qE "FAIL|MISMATCHED" && failed=1 }
 run "model logic"                   models
 run "iOS view model"                vm 18801
@@ -83,6 +92,8 @@ run "now playing, captured states"  now-playing $H/fixtures/captured-states.json
 run "direct backend"                direct 18820
 run "direct commands"               direct-commands 18850
 run "direct presets"                direct-presets 18860
+run "watch, local network"          watch-local 18870 18899
+run "Siri, local network"           intents-local 18880 18890
 run "iOS view model, local network" vm-local 18830
 run "discovery triggers"            discovery 18840
 

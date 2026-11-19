@@ -43,6 +43,8 @@ struct RoomState: Identifiable, Equatable {
     let track: Track?
     /// Matches the iOS app's grayed-out volume controls.
     let isVolumeDisabled: Bool
+    /// The speaker's volume has never been read (it hasn't answered), as opposed to a fixed output.
+    let isVolumeUnknown: Bool
     /// Group volume is disabled only when every member's volume is.
     let isGroupVolumeDisabled: Bool
 
@@ -61,9 +63,29 @@ enum ControlTarget: Hashable {
 /// values until a refresh that started after the request completed confirms them.
 @MainActor
 final class WatchNetworkController: ObservableObject {
+    /// One state for the whole network, so a view can't check two flags in the wrong order.
+    enum LoadState: Equatable {
+        /// No reading yet.
+        case loading
+        /// Rooms reflect the latest reading.
+        case loaded
+        /// The last reading failed; rooms are from the one before (server networks).
+        case stale(String)
+        /// No reading has ever succeeded, and the server can't be reached.
+        case failed(String)
+        /// Local network: no speaker answered, confirmed twice in a row or never reached. There's no
+        /// layout to report, so no rooms are shown.
+        case offline
+    }
+
     @Published private(set) var rooms: [RoomState] = []
-    @Published private(set) var hasLoaded = false
-    @Published private(set) var errorMessage: String?
+    @Published private(set) var loadState: LoadState = .loading
+    var hasLoaded: Bool {
+        switch loadState {
+        case .loaded, .stale: return true
+        case .loading, .offline, .failed: return false
+        }
+    }
     /// Visible presets for this network, cached on the watch so the list appears instantly.
     @Published private(set) var presets: [Station] = []
     @Published private(set) var isLoadingPresets = false
@@ -87,6 +109,22 @@ final class WatchNetworkController: ObservableObject {
     }
 
     private var lastZones: [Zone] = []
+    /// What triggered a refresh. Only scheduled polls count toward Offline: refreshes after an action
+    /// can come in bursts (every Crown change triggers one) and would trip it in seconds.
+    enum RefreshKind: String {
+        case scheduled = "poll"
+        case action
+    }
+
+    /// Consecutive scheduled polls where no speaker answered. Any success, including an accepted
+    /// command, resets it.
+    private var failedScheduledPolls = 0
+    /// Offline after this many failed scheduled polls in a row: 15 to 30 s at 15 s polls. A route
+    /// change (iPhone relay to the watch's own Wi-Fi) stalls requests for 5 to 9 s, which can cost
+    /// at most one poll.
+    static let offlineAfterFailedPolls = 2
+    /// Before anything has loaded, retry sooner, so Offline (or rooms) appears within seconds.
+    static let firstLoadRetry: Duration = .seconds(3)
     private var refreshGeneration = 0
     private var appliedGeneration = 0
     private var pollTask: Task<Void, Never>?
@@ -112,6 +150,17 @@ final class WatchNetworkController: ObservableObject {
     deinit {
         pollTask?.cancel()
         volumeTasks.values.forEach { $0.cancel() }
+    }
+
+    /// The speakers answered something (a read or an accepted command): they're there.
+    private func noteContact() {
+        failedScheduledPolls = 0
+    }
+
+    /// Records a command's outcome, and counts an accepted one as contact.
+    private func recordCommand(_ name: String, ok: Bool, started: Date) {
+        WatchDiagnostics.record("command \(name) \(ok ? "ok" : "FAIL") \(WatchDiagnostics.milliseconds(since: started))ms \(config.displayName)")
+        if ok { noteContact() }
     }
 
     func room(named name: String) -> RoomState? {
@@ -165,8 +214,9 @@ final class WatchNetworkController: ObservableObject {
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
                 // Optional chaining holds self only for the refresh, never across the sleep.
-                await self?.refresh()
-                try? await Task.sleep(for: Self.pollInterval)
+                await self?.refresh(kind: .scheduled)
+                let loaded = await MainActor.run { self?.hasLoaded ?? true }
+                try? await Task.sleep(for: loaded ? Self.pollInterval : Self.firstLoadRetry)
             }
         }
     }
@@ -178,23 +228,66 @@ final class WatchNetworkController: ObservableObject {
 
     // MARK: - Refresh
 
-    func refresh() async {
+    /// Reports the layout as the speakers report it, and changes only when that report changes.
+    func refresh(kind: RefreshKind = .action) async {
+        let started = Date()
         refreshGeneration += 1
         let generation = refreshGeneration
         let backend = self.backend
-        switch await Result(asyncCatching: { try await backend.zones() }) {
+        let result: Result<[Zone], Error>
+        if let direct = backend as? DirectBackend {
+            switch await Result(asyncCatching: { try await direct.snapshot() }) {
+            case .success(let snapshot):
+                // Remember addresses the layout reported, so new speakers and changed addresses are
+                // reachable on the next poll even before the phone syncs them.
+                if !snapshot.addresses.isEmpty, snapshot.addresses != config.speakerAddresses {
+                    config.speakerAddresses = snapshot.addresses
+                }
+                result = .success(snapshot.zones)
+            case .failure(let error):
+                result = .failure(error)
+            }
+        } else {
+            result = await Result(asyncCatching: { try await backend.zones() })
+        }
+
+        switch result {
         case .success(let zones):
+            WatchDiagnostics.record("\(kind.rawValue) ok \(zones.count) groups \(WatchDiagnostics.milliseconds(since: started))ms \(config.displayName)")
+            noteContact()
             guard generation > appliedGeneration else { return }
             appliedGeneration = generation
-            lastZones = zones
+            // A speaker that didn't answer keeps its last reported values rather than defaults.
+            lastZones = zones.carryingForward(from: lastZones)
             dropConfirmedOverrides(upTo: generation)
             publishRooms()
-            hasLoaded = true
-            errorMessage = nil
+            if loadState != .loaded { loadState = .loaded }
+        case .failure(let error) where DirectBackend.isCancellation(error):
+            // Cancelled (polling paused, the app moved on): neither a success nor a failure.
+            WatchDiagnostics.record("\(kind.rawValue) cancelled \(WatchDiagnostics.milliseconds(since: started))ms \(config.displayName)")
         case .failure(let error):
             log.error("Refresh failed: \(error.localizedDescription, privacy: .public)")
-            if generation > appliedGeneration {
-                errorMessage = "Can't reach \(URL(string: baseURL)?.host ?? baseURL)."
+            let reason: String
+            if case DirectBackend.DirectError.noSpeakerAnswered(let reasons) = error {
+                reason = "no speaker answered [\(reasons.joined(separator: "; "))]"
+            } else {
+                reason = DirectBackend.describe(error)
+            }
+            WatchDiagnostics.record("\(kind.rawValue) FAIL \(reason) \(WatchDiagnostics.milliseconds(since: started))ms \(config.displayName)")
+            guard generation > appliedGeneration else { return }
+            if case DirectBackend.DirectError.noSpeakerAnswered = error {
+                // Report the last layout until the speakers' silence is confirmed: two failed scheduled
+                // polls in a row. A failed refresh after an action changes nothing.
+                guard kind == .scheduled else { return }
+                failedScheduledPolls += 1
+                if failedScheduledPolls >= Self.offlineAfterFailedPolls {
+                    loadState = .offline
+                    lastZones = []
+                    if !rooms.isEmpty { rooms = [] }
+                }
+            } else {
+                let message = config.isLocal ? "Couldn't refresh the speakers." : "Can't reach \(URL(string: baseURL)?.host ?? baseURL)."
+                loadState = hasLoaded ? .stale(message) : .failed(message)
             }
         }
     }
@@ -244,6 +337,7 @@ final class WatchNetworkController: ObservableObject {
                     nowPlaying: nowPlaying,
                     track: coordinator.state.currentTrack,
                     isVolumeDisabled: config.isVolumeDisabled(for: member),
+                    isVolumeUnknown: member.state.isLevelUnread == true,
                     isGroupVolumeDisabled: groupVolumeDisabled
                 ))
             }
@@ -288,11 +382,13 @@ final class WatchNetworkController: ObservableObject {
         volumeTasks[target] = Task { [weak self] in
             try? await Task.sleep(for: Self.volumeSendDelay)
             guard !Task.isCancelled, let self else { return }
+            let started = Date()
             let ok: Bool
             switch target {
             case .room(let name): ok = await self.backend.setVolume(value, room: name)
             case .group(let coordinator): ok = await self.backend.setGroupVolume(value, coordinator: coordinator)
             }
+            self.recordCommand("volume \(value)", ok: ok, started: started)
             // A newer value set while this was in flight keeps its own override.
             if self.pendingVolume[target]?.value == value {
                 if ok {
@@ -313,12 +409,14 @@ final class WatchNetworkController: ObservableObject {
 
         let backend = self.backend
         Task { [weak self] in
+            let started = Date()
             let ok: Bool
             switch target {
             case .room(let name): ok = await backend.setMute(newValue, room: name)
             case .group(let coordinator): ok = await backend.setGroupMute(newValue, coordinator: coordinator)
             }
             guard let self else { return }
+            self.recordCommand(newValue ? "mute" : "unmute", ok: ok, started: started)
             if ok {
                 self.pendingMute[target]?.clearAfterGeneration = self.refreshGeneration
             } else {
@@ -391,9 +489,11 @@ final class WatchNetworkController: ObservableObject {
 
         let backend = self.backend
         Task { [weak self] in
+            let started = Date()
             let loaded = await backend.loadPreset(station, coordinator: coordinator)
             let ok = await backend.play(coordinator: coordinator) && loaded
             guard let self else { return }
+            self.recordCommand("preset \(station.name)", ok: ok, started: started)
             if ok {
                 self.pendingPlaying[coordinator]?.clearAfterGeneration = self.refreshGeneration
             } else {
@@ -425,8 +525,10 @@ final class WatchNetworkController: ObservableObject {
 
         let backend = self.backend
         Task { [weak self] in
+            let started = Date()
             let ok = play ? await backend.play(coordinator: coordinator) : await backend.pause(coordinator: coordinator)
             guard let self else { return }
+            self.recordCommand(play ? "play" : "pause", ok: ok, started: started)
             if ok {
                 self.pendingPlaying[coordinator]?.clearAfterGeneration = self.refreshGeneration
             } else {

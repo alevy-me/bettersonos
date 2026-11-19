@@ -12,9 +12,10 @@ let serverPort = CommandLine.arguments[1]
     store.configs = [server]
 
     var discoverCalls = 0
+    var nextOutcome: DiscoveryOutcome = .found([household])
     let coordinator = DiscoveryCoordinator(networkStore: store) {
         discoverCalls += 1
-        return .found([household])
+        return nextOutcome
     }
 
     coordinator.run(force: true)
@@ -55,11 +56,27 @@ let serverPort = CommandLine.arguments[1]
     check(local?.isLocal == true && local?.displayName == "Home", "confirm creates the local network named Home")
     check(local.map(coordinator.isAvailable) == true, "the new local network is available")
 
-    // A local network that stops answering asks for a run, at most every 30 seconds.
     let beforeFailure = discoverCalls
     for _ in 0..<5 { NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: "Sonos_TEST") }
     try? await Task.sleep(for: .seconds(1.5))
     check(discoverCalls - beforeFailure == 1, "five failure reports cause one run: \(discoverCalls - beforeFailure)")
+
+    // Availability. The household's only known address is dead (127.0.0.1:9), and Bonjour now finds
+    // nothing, so every discovery probe of it fails.
+    let home = store.configs.first { $0.householdID == "Sonos_TEST" }!
+    NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkReachable, object: "Sonos_TEST")
+    try? await Task.sleep(for: .milliseconds(200))
+    nextOutcome = .nothingFound
+    coordinator.run(force: true)
+    try? await Task.sleep(for: .seconds(2.5))
+    check(coordinator.isAvailable(home), "a loaded network stays available when a discovery probe fails: not confirmed")
+    try? await Task.sleep(for: .seconds(31)) // past the 30 s cap on failure-triggered runs
+    NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: "Sonos_TEST")
+    try? await Task.sleep(for: .seconds(2.5))
+    check(!coordinator.isAvailable(home), "after its view model confirms the silence, it becomes unavailable")
+    NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkReachable, object: "Sonos_TEST")
+    try? await Task.sleep(for: .milliseconds(200))
+    check(coordinator.isAvailable(home), "and comes back as soon as the speakers answer")
 }
 Task { await run(); print(fails == 0 ? "ALL PASS" : "\(fails) FAILED"); exit(0) }
 RunLoop.main.run()

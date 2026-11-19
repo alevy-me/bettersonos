@@ -67,10 +67,10 @@ final class WatchModel: ObservableObject {
             .store(in: &cancellables)
     }
 
-    /// Local (direct) networks join the watch in direct-control phase 4, once port 1400 from the
-    /// watch is verified. Until then the watch shows server networks only.
+    /// Every enabled network. Local (direct) networks use the speaker addresses the phone found,
+    /// synced through iCloud; the watch doesn't browse for speakers itself.
     var enabledConfigs: [NetworkConfig] {
-        store.configs.filter { $0.enabled && !$0.isLocal }
+        store.configs.filter(\.enabled)
     }
 
     func config(id: UUID) -> NetworkConfig? {

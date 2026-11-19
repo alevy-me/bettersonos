@@ -39,18 +39,21 @@ enum SonosDirectory {
     }
 
     static func enabledConfigs() -> [NetworkConfig] {
-        // Read-only: Siri must never write configs back to iCloud. Local (direct) networks join Siri
-        // in direct-control phase 4, once direct commands exist.
-        NetworkConfigStore(cloudReadOnly: true).configs.filter { $0.enabled && !$0.isLocal }
+        // Read-only: Siri must never write configs back to iCloud.
+        NetworkConfigStore(cloudReadOnly: true).configs.filter(\.enabled)
     }
 
     static func isPlaying(_ member: Member) -> Bool {
-        ["PLAYING", "TRANSITIONING"].contains(member.state.playbackState)
+        // A coordinator that didn't answer isn't reported as playing or not.
+        member.state.isPlaybackUnread != true && ["PLAYING", "TRANSITIONING"].contains(member.state.playbackState)
     }
 
     static func zones(for config: NetworkConfig) async throws -> [Zone] {
         do {
             return try await config.backend.zones()
+        } catch DirectBackend.DirectError.noSpeakerAnswered {
+            // No speaker on a local network answered at all: almost always because you're away from it.
+            throw SonosIntentError.notOnNetwork(config.displayName)
         } catch {
             throw SonosIntentError.unreachable(config.displayName)
         }
@@ -168,6 +171,8 @@ enum SonosDirectory {
 
 enum SonosIntentError: Error, CustomLocalizedStringResourceConvertible {
     case unreachable(String)
+    case notOnNetwork(String)
+    case notResponding(String)
     case networkGone(String)
     case roomNotFound(String)
     case fixedVolume(String)
@@ -178,6 +183,8 @@ enum SonosIntentError: Error, CustomLocalizedStringResourceConvertible {
     var localizedStringResource: LocalizedStringResource {
         switch self {
         case .unreachable(let network): return "Can't reach the \(network) speakers."
+        case .notOnNetwork(let network): return "BonTon can't reach the \(network) speakers from here."
+        case .notResponding(let room): return "\(room) isn't responding."
         case .networkGone(let network): return "The \(network) network isn't set up in BonTon anymore."
         case .roomNotFound(let room): return "I can't find \(room)."
         case .fixedVolume(let room): return "\(room) has a fixed volume."

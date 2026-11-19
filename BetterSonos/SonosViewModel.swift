@@ -45,8 +45,21 @@ final class SonosViewModel: ObservableObject {
 
     let configID: UUID
     private let baseURL: String
-    /// Reads state and sends commands. The SSE stream below is server-specific and stays separate.
-    private let backend: any SonosBackend
+    /// Reads state and sends commands. Built from the current config each time, so speaker addresses
+    /// learned or rediscovered later take effect. The SSE stream below is server-specific and separate.
+    private var backend: any SonosBackend { currentConfig?.backend ?? fallbackBackend }
+    private let fallbackBackend: any SonosBackend
+    /// What triggered a refresh. Only scheduled polls count toward unavailable: refreshes after
+    /// actions come in bursts and would trip it in seconds.
+    enum RefreshKind { case scheduled, action }
+
+    /// Consecutive scheduled polls where no local speaker answered. Any success, including an
+    /// accepted command, resets it.
+    private var failedScheduledPolls = 0
+    /// Unavailable after this many failed scheduled polls in a row: 10 to 15 s at 5 s polls.
+    static let unavailableAfterFailedPolls = 3
+    /// True once this view model has told discovery the network is unreachable, until it answers again.
+    private var reportedUnreachable = false
     /// A local network talks to the speakers directly: no server, so no SSE, and a faster poll instead.
     private let isLocal: Bool
     private let networkStore: NetworkConfigStore
@@ -88,7 +101,7 @@ final class SonosViewModel: ObservableObject {
         self.settingsStore = settingsStore
         let config = networkStore.configs.first { $0.id == configID }
         self.lastConfigSnapshot = config
-        self.backend = config?.backend ?? ServerBackend(baseURL: baseURL)
+        self.fallbackBackend = config?.backend ?? ServerBackend(baseURL: baseURL)
         self.isLocal = config?.isLocal ?? false
 
         let sseConfig = URLSessionConfiguration.default
@@ -209,36 +222,58 @@ final class SonosViewModel: ObservableObject {
         if selectedStationByRoom != selections { selectedStationByRoom = selections }
     }
 
-    func refresh() async {
+    func refresh(kind: RefreshKind = .action) async {
         refreshGeneration += 1
         let generation = refreshGeneration
 
         let backend = self.backend
         log.debug("Refreshing \(self.baseURL, privacy: .public)")
         // Zones drive the UI; favorites are independent, so a favorites failure never blocks zone state.
-        async let zonesResult = Result(asyncCatching: { try await backend.zones() })
+        // A local network also reports every speaker address its layout lists, for saving.
+        async let zonesResult = Result(asyncCatching: { () -> (zones: [Zone], addresses: [String: String]?) in
+            if let direct = backend as? DirectBackend {
+                let snapshot = try await direct.snapshot()
+                return (snapshot.zones, snapshot.addresses)
+            }
+            return (try await backend.zones(), nil)
+        })
         async let favoritesResult = Result(asyncCatching: { try await backend.favoriteNames() })
         let zones = await zonesResult
         let favorites = await favoritesResult
 
         switch zones {
-        case .success(let zones):
+        case .success(let snapshot):
             if generation > appliedRefreshGeneration {
                 appliedRefreshGeneration = generation
-                processZones(zones)
+                // A speaker that didn't answer keeps its last reported values rather than defaults.
+                processZones(snapshot.zones.carryingForward(from: lastZones))
             }
+            if let addresses = snapshot.addresses { saveLearnedAddresses(addresses) }
+            noteContact()
             hasLoadedZones = true
             refreshError = nil
+        case .failure(let error) where DirectBackend.isCancellation(error):
+            // Cancelled (polling paused, the app moved on): neither a success nor a failure.
+            log.debug("Refresh cancelled")
         case .failure(let error):
             log.error("Error refreshing Sonos state: \(error.localizedDescription, privacy: .public)")
-            if generation > appliedRefreshGeneration {
-                refreshError = isLocal
-                    ? "Can't reach your speakers. Make sure you're on the same Wi-Fi as your Sonos system."
-                    : "Failed to refresh speaker status. Please check your connection to the node-sonos-http-api server."
-            }
-            // Speakers that stop answering may have new addresses: ask discovery to look again (it debounces).
-            if isLocal, let householdID = currentConfig?.householdID {
-                NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: householdID)
+            // Report what the speakers report. On a local network, a failed refresh changes nothing until
+            // the silence is confirmed: three failed scheduled polls in a row. Refreshes after actions
+            // never count.
+            if isLocal {
+                if kind == .scheduled { failedScheduledPolls += 1 }
+                let confirmed = failedScheduledPolls >= Self.unavailableAfterFailedPolls
+                if confirmed, generation > appliedRefreshGeneration {
+                    refreshError = "Can't reach your speakers. Make sure you're on the same Wi-Fi as your Sonos system."
+                }
+                // Confirmed silence: speakers may have new addresses, or you've left. Discovery looks again
+                // and decides availability (it debounces).
+                if confirmed, !reportedUnreachable, let householdID = currentConfig?.householdID {
+                    reportedUnreachable = true
+                    NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkUnreachable, object: householdID)
+                }
+            } else if generation > appliedRefreshGeneration {
+                refreshError = "Failed to refresh speaker status. Please check your connection to the node-sonos-http-api server."
             }
         }
 
@@ -253,6 +288,23 @@ final class SonosViewModel: ObservableObject {
         updateStatus()
 
         if case .success = zones { retryIncompleteStationsIfDue() }
+    }
+
+    /// The speakers answered something (a read or an accepted command): they're there.
+    private func noteContact() {
+        failedScheduledPolls = 0
+        if reportedUnreachable, let householdID = currentConfig?.householdID {
+            reportedUnreachable = false
+            NotificationCenter.default.post(name: DiscoveryCoordinator.localNetworkReachable, object: householdID)
+        }
+    }
+
+    /// Saves speaker addresses the layout reported, only when they changed, so new speakers and new
+    /// addresses reach the watch and other devices without waiting for discovery.
+    private func saveLearnedAddresses(_ addresses: [String: String]) {
+        guard isLocal, !addresses.isEmpty, var config = currentConfig, config.speakerAddresses != addresses else { return }
+        config.speakerAddresses = addresses
+        networkStore.update(config)
     }
 
     // MARK: - Stations
@@ -360,7 +412,7 @@ final class SonosViewModel: ObservableObject {
         volume[room] = newVolume // Optimistic update
         let backend = self.backend
         Task { [weak self] in
-            await backend.setVolume(newVolume, room: room)
+            if await backend.setVolume(newVolume, room: room) { self?.noteContact() }
             // Always reconcile: fixed-volume outputs accept the request without changing anything.
             await self?.refresh()
         }
@@ -371,7 +423,7 @@ final class SonosViewModel: ObservableObject {
         isMuted[room] = mute // Optimistic update
         let backend = self.backend
         Task { [weak self] in
-            await backend.setMute(mute, room: room)
+            if await backend.setMute(mute, room: room) { self?.noteContact() }
             await self?.refresh()
         }
     }
@@ -409,7 +461,7 @@ final class SonosViewModel: ObservableObject {
     func joinGroup(room: String, target: String) {
         let backend = self.backend
         Task { [weak self] in
-            await backend.join(room: room, to: target)
+            if await backend.join(room: room, to: target) { self?.noteContact() }
             await self?.refresh()
         }
     }
@@ -417,7 +469,7 @@ final class SonosViewModel: ObservableObject {
     func leaveGroup(room: String) {
         let backend = self.backend
         Task { [weak self] in
-            await backend.leave(room: room)
+            if await backend.leave(room: room) { self?.noteContact() }
             await self?.refresh()
         }
     }
@@ -626,7 +678,7 @@ final class SonosViewModel: ObservableObject {
                 try? await Task.sleep(for: .seconds(self?.pollInterval ?? Constants.pollInterval))
                 if Task.isCancelled { return }
                 guard let self else { return }
-                await self.refresh()
+                await self.refresh(kind: .scheduled)
             }
         }
     }

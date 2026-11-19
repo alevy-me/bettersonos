@@ -8,11 +8,11 @@ let backend = DirectBackend(speakers: ["RINCON_DEAD01400": "127.0.0.1:9", "RINCO
 Task {
     do {
         let topology = try await backend.topology()
-        check(topology.groups.count == 5, "layout read past a dead address: \(topology.groups.count) groups")
-        check(topology.addresses.count == 7, "every speaker's address learned, hidden ones included: \(topology.addresses.count)")
+        check(topology.groups.count == 6, "layout read past a dead address: \(topology.groups.count) groups")
+        check(topology.addresses.count == 8, "every speaker's address learned, hidden ones included: \(topology.addresses.count)")
         let zones = try await backend.zones()
         let names = zones.map(\.coordinator.roomName)
-        check(names == ["Bedroom", "Big Speakers", "Kitchen", "TV Room"], "rooms, with the Bridge left out: \(names)")
+        check(names == ["Bedroom", "Big Speakers", "Kitchen", "Patio", "TV Room"], "rooms, with the Bridge left out: \(names)")
         let tv = zones.first { $0.coordinator.roomName == "TV Room" }!
         check(tv.members.count == 1 && tv.coordinator.uuid == "RINCON_TVL01400", "stereo pair is one room, controlled through the visible speaker")
         check(tv.coordinator.state.mute && tv.coordinator.state.volume == 45, "TV Room volume 45, muted")
@@ -29,6 +29,18 @@ Task {
         check(big.coordinator.state.isOutputFixed == true && kitchen.coordinator.state.isOutputFixed == false, "fixed output read from the speaker: Big Speakers fixed, Kitchen not")
         let plain = NetworkConfig(id: UUID(), displayName: "T", baseURL: "", enabled: true, showDefaultPresetsForThisNetwork: false)
         check(plain.isVolumeDisabled(for: big.coordinator) && !plain.isVolumeDisabled(for: kitchen.coordinator), "fixed output grays out volume with no settings")
+        // A speaker in the layout that answers nothing else: still reported, values marked unread.
+        let patio = zones.first { $0.coordinator.roomName == "Patio" }!
+        check(patio.coordinator.state.isPlaybackUnread == true && patio.coordinator.state.isLevelUnread == true, "a silent speaker stays in the layout, its values marked unread")
+        check(plain.isVolumeDisabled(for: patio.coordinator), "a never-read volume is shown as unavailable, not 0")
+        check(bath.state.isLevelUnread == true && bedroom.coordinator.state.isPlaybackUnread != true, "one silent room doesn't mark its group's playback unread")
+        // Carrying forward: last real values replace unread ones; rooms still come from the new layout.
+        let previous = [Zone(coordinator: Member(roomName: "Patio", uuid: "RINCON_PATIO01400",
+                                                  state: PlayerState(volume: 27, mute: true, currentTrack: Track(stationName: "WWNO", uri: "x-sonosapi-stream:s3"), playbackState: "PLAYING"),
+                                                  groupState: GroupState(volume: 27, mute: true)), members: [])]
+        let carried = patio.carryingForward(from: previous).coordinator.state
+        check(carried.volume == 27 && carried.mute && carried.playbackState == "PLAYING" && carried.isLevelUnread == false && carried.isPlaybackUnread == false, "unread values carry forward from the last reading")
+        check(NowPlaying(track: carried.currentTrack)?.line == "WWNO", "including what it was playing")
         let favorites = try await backend.favoriteNames()
         check(favorites == ["WWNO", "FIP", "Radio Woodstock 100.1", "Dinner Jazz"], "favorites browsed: \(favorites)")
         let dead = DirectBackend(speakers: ["x": "127.0.0.1:9"])

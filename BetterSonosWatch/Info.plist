@@ -14,6 +14,9 @@
 			<string>Bonton</string>
 		</dict>
 	</array>
+	<!-- Direct control talks to the speakers on the local network. -->
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>BonTon controls the Sonos speakers on your Wi-Fi.</string>
 	<!-- Same as the iOS app. Do not add NSAllowsLocalNetworking: it makes the system ignore
 	     NSAllowsArbitraryLoads and blocks plain HTTP to public hostnames such as a port-forwarded server. -->
 	<key>NSAppTransportSecurity</key>

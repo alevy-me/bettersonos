@@ -187,6 +187,8 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
     /// user disabled, or one the speaker itself reports as fixed (direct networks).
     public func isVolumeDisabled(for member: Member) -> Bool {
         isVolumeDisabled(forPlayer: member.uuid) || member.state.isOutputFixed == true
+            // Never read: there's no volume to show or adjust from.
+            || member.state.isLevelUnread == true
     }
 
     /// True when the station list for this network would otherwise be empty, which forces the default presets on.
@@ -344,6 +346,11 @@ public struct SonosGroup: Identifiable, Hashable, Sendable {
 public struct Zone: Codable, Sendable {
     public let coordinator: Member
     public let members: [Member]
+
+    public init(coordinator: Member, members: [Member]) {
+        self.coordinator = coordinator
+        self.members = members
+    }
 }
 
 public struct Member: Codable, Sendable {
@@ -352,11 +359,23 @@ public struct Member: Codable, Sendable {
     public let state: PlayerState
     /// Volume and mute for the whole group this player belongs to. Optional so older servers still decode.
     public let groupState: GroupState?
+
+    public init(roomName: String, uuid: String, state: PlayerState, groupState: GroupState?) {
+        self.roomName = roomName
+        self.uuid = uuid
+        self.state = state
+        self.groupState = groupState
+    }
 }
 
 public struct GroupState: Codable, Equatable, Sendable {
     public let volume: Int
     public let mute: Bool
+
+    public init(volume: Int, mute: Bool) {
+        self.volume = volume
+        self.mute = mute
+    }
 }
 
 public struct Track: Codable, Equatable, Sendable {
@@ -388,6 +407,22 @@ public struct PlayerState: Codable, Sendable {
     public let playbackState: String
     /// The speaker reports a fixed (line-level) output. Read directly from the speaker; servers don't report it.
     public var isOutputFixed: Bool? = nil
+    /// Direct networks only: the speaker didn't answer this refresh, so `playbackState` and
+    /// `currentTrack` (group) or `volume` and `mute` (room) are placeholders, not readings. Consumers
+    /// carry the last real values forward with `Zone.carryingForward(from:)`.
+    public var isPlaybackUnread: Bool? = nil
+    public var isLevelUnread: Bool? = nil
+
+    public init(volume: Int, mute: Bool, currentTrack: Track?, playbackState: String, isOutputFixed: Bool? = nil,
+                isPlaybackUnread: Bool? = nil, isLevelUnread: Bool? = nil) {
+        self.volume = volume
+        self.mute = mute
+        self.currentTrack = currentTrack
+        self.playbackState = playbackState
+        self.isOutputFixed = isOutputFixed
+        self.isPlaybackUnread = isPlaybackUnread
+        self.isLevelUnread = isLevelUnread
+    }
 
     /// Live radio can't pause on Sonos: "pausing" it stops the transport, and `play` alone may not restart it.
     public var isStopped: Bool { playbackState == "STOPPED" }
@@ -484,5 +519,43 @@ final class RedirectHandler: NSObject, URLSessionTaskDelegate {
         } else {
             completionHandler(request)
         }
+    }
+}
+
+// MARK: - Carrying state forward
+
+extension Zone {
+    /// Replaces values a speaker didn't answer for this refresh with the last ones it did report,
+    /// so a silent speaker keeps its last known state rather than defaults. Rooms and groups always
+    /// come from the new layout; only unread values are filled in. Values never read stay unread.
+    public func carryingForward(from previous: [Zone]) -> Zone {
+        var lastByPlayer: [String: Member] = [:]
+        for zone in previous {
+            for member in [zone.coordinator] + zone.members { lastByPlayer[member.uuid] = member }
+        }
+        func carried(_ member: Member) -> Member {
+            guard let last = lastByPlayer[member.uuid] else { return member }
+            var state = member.state
+            var groupState = member.groupState
+            if state.isLevelUnread == true, last.state.isLevelUnread != true {
+                state = PlayerState(volume: last.state.volume, mute: last.state.mute, currentTrack: state.currentTrack,
+                                    playbackState: state.playbackState, isOutputFixed: last.state.isOutputFixed,
+                                    isPlaybackUnread: state.isPlaybackUnread, isLevelUnread: false)
+            }
+            if state.isPlaybackUnread == true, last.state.isPlaybackUnread != true {
+                state = PlayerState(volume: state.volume, mute: state.mute, currentTrack: last.state.currentTrack,
+                                    playbackState: last.state.playbackState, isOutputFixed: state.isOutputFixed,
+                                    isPlaybackUnread: false, isLevelUnread: state.isLevelUnread)
+                groupState = last.groupState ?? groupState
+            }
+            return Member(roomName: member.roomName, uuid: member.uuid, state: state, groupState: groupState)
+        }
+        return Zone(coordinator: carried(coordinator), members: members.map(carried))
+    }
+}
+
+extension Array where Element == Zone {
+    public func carryingForward(from previous: [Zone]) -> [Zone] {
+        previous.isEmpty ? self : map { $0.carryingForward(from: previous) }
     }
 }

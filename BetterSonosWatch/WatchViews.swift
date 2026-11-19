@@ -91,6 +91,16 @@ struct RootView: View {
         if path != target { path = target }
     }
 
+    /// If the room reopened at launch isn't in the layout (asleep, unplugged or removed), show its
+    /// network's room list instead of an empty room screen.
+    private func leaveMissingLastRoom() {
+        guard case .room(let id, let name)? = path.last, let config = model.config(id: id) else { return }
+        let controller = model.controller(for: config)
+        if controller.hasLoaded, controller.room(named: name) == nil {
+            path.removeLast()
+        }
+    }
+
     @ViewBuilder
     private func destination(for route: Route) -> some View {
         switch route {
@@ -126,7 +136,10 @@ struct RootView: View {
            !lastRoomName.isEmpty {
             path = routes(to: lastRoomName, in: network)
         }
-        Task { await focusSolePlayingRoom() }
+        Task {
+            await focusSolePlayingRoom()
+            leaveMissingLastRoom()
+        }
     }
 }
 
@@ -147,14 +160,18 @@ private struct RoomList: View {
 
     var body: some View {
         List {
-            if let error = controller.errorMessage {
-                ErrorRow(message: error, isStale: controller.hasLoaded) {
-                    Task { await controller.refresh() }
-                }
-            }
-            if !controller.hasLoaded && controller.errorMessage == nil {
+            switch controller.loadState {
+            case .loading:
                 ProgressView()
                     .frame(maxWidth: .infinity)
+            case .loaded:
+                EmptyView()
+            case .offline:
+                OfflineMessage(alignment: .leading) { Task { await controller.refresh() } }
+            case .stale(let message):
+                ErrorRow(message: message, isStale: true) { Task { await controller.refresh() } }
+            case .failed(let message):
+                ErrorRow(message: message, isStale: false) { Task { await controller.refresh() } }
             }
             ForEach(controller.rooms) { room in
                 NavigationLink(value: Route.room(network: config.id, name: room.name)) {
@@ -194,6 +211,27 @@ private struct RoomRow: View {
                     .lineLimit(1)
             }
         }
+    }
+}
+
+/// A local network whose speakers don't answer. The watch can't search for speakers itself, so if
+/// you're home, the phone has to find them (new addresses reach the watch through iCloud).
+private struct OfflineMessage: View {
+    let alignment: HorizontalAlignment
+    let retry: () -> Void
+
+    var body: some View {
+        VStack(alignment: alignment, spacing: 4) {
+            Label("Offline", systemImage: "wifi.slash")
+                .font(.footnote)
+            Text("These speakers can't be reached from here. At home? Open BonTon on your iPhone to find them.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(alignment == .center ? .center : .leading)
+            Button("Retry", action: retry)
+                .font(.caption2)
+        }
+        .accessibilityElement(children: .combine)
     }
 }
 
@@ -245,21 +283,34 @@ struct RoomView: View {
     private var volumeDisabled: Bool { controller.isVolumeDisabled(for: target) }
     private var displayedMute: Bool { controller.isMuted(target) ?? false }
 
+    /// Says why a volume can't be changed: a fixed output, or a speaker whose volume hasn't been read.
+    private func volumeCaption(for room: RoomState) -> String {
+        if controlsGroup && room.isGrouped { return volumeDisabled ? "Group volume unavailable" : "Group volume" }
+        if room.isVolumeUnknown { return "Volume unavailable" }
+        return volumeDisabled ? "Fixed volume" : "Volume"
+    }
+
     var body: some View {
         Group {
             if let room {
                 controls(for: room)
-            } else if let error = controller.errorMessage {
-                VStack(spacing: 8) {
-                    Text(error).font(.footnote).multilineTextAlignment(.center)
-                    Button("Retry") { Task { await controller.refresh() } }
-                }
-            } else if controller.hasLoaded {
-                Text("\(roomName) isn't on this network anymore.")
-                    .font(.footnote)
-                    .multilineTextAlignment(.center)
             } else {
-                ProgressView()
+                switch controller.loadState {
+                case .loading:
+                    ProgressView()
+                case .offline:
+                    OfflineMessage(alignment: .center) { Task { await controller.refresh() } }
+                case .failed(let message):
+                    VStack(spacing: 8) {
+                        Text(message).font(.footnote).multilineTextAlignment(.center)
+                        Button("Retry") { Task { await controller.refresh() } }
+                    }
+                case .loaded, .stale:
+                    // The layout no longer lists this room (asleep, unplugged or removed).
+                    Text("\(roomName) isn't on this network right now.")
+                        .font(.footnote)
+                        .multilineTextAlignment(.center)
+                }
             }
         }
         .navigationTitle(roomName)
@@ -278,14 +329,10 @@ struct RoomView: View {
         .onAppear {
             lastNetworkID = networkID.uuidString
             lastRoomName = roomName
-            crownValue = Double(displayedVolume)
             crownFocused = true
         }
-        // Crown turns become volume changes. setVolume ignores a value equal to the current one,
-        // so the programmatic updates below never send a request.
-        .onChange(of: crownValue) { _, value in
-            controller.setVolume(Int(value.rounded()), for: target)
-        }
+        // The Crown's value follows the speaker. Only an actual turn sends a volume (see the Crown's
+        // onChange below); values the app sets here never reach the speaker.
         .onChange(of: displayedVolume) { _, volume in
             if Int(crownValue.rounded()) != volume { crownValue = Double(volume) }
         }
@@ -309,21 +356,30 @@ struct RoomView: View {
                     .monospacedDigit()
                     .contentTransition(.numericText())
                     .foregroundStyle(volumeDisabled ? .secondary : .primary)
-                Text(volumeDisabled ? "Fixed volume" : (controlsGroup && room.isGrouped ? "Group volume" : "Volume"))
+                Text(volumeCaption(for: room))
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
             .frame(maxWidth: .infinity)
             .focusable(!volumeDisabled)
             .focused($crownFocused)
+            // Start from the speaker's real volume when the controls appear: they can appear well after
+            // the screen opens, when the first reading is slow (the watch on its own Wi-Fi).
+            .onAppear { crownValue = Double(displayedVolume) }
             .digitalCrownRotation(
-                $crownValue,
+                detent: $crownValue,
                 from: 0,
                 through: 100,
                 by: 1,
                 sensitivity: .medium,
                 isContinuous: false,
-                isHapticFeedbackEnabled: true
+                isHapticFeedbackEnabled: true,
+                onChange: { event in
+                    // A real turn has velocity. The control attaching, or the app setting the value to
+                    // follow the speaker, doesn't, and must never send a volume (it once sent 0).
+                    guard event.velocity != 0 else { return }
+                    controller.setVolume(Int(event.offset.rounded()), for: target)
+                }
             )
             .accessibilityLabel(controlsGroup && room.isGrouped ? "Group volume" : "Volume")
             .accessibilityValue(volumeDisabled ? "Fixed" : "\(displayedVolume)")

@@ -22,7 +22,10 @@ import Foundation
 
 public struct DirectBackend: SonosBackend {
     public enum DirectError: Error {
-        case noSpeakerAnswered
+        /// No speaker answered the layout request. `reasons` says why each one failed, for diagnostics.
+        case noSpeakerAnswered(reasons: [String] = [])
+        /// The request was cancelled (polling paused or the app moved on). Says nothing about the network.
+        case cancelled
         case roomNotFound(String)
         case favoriteNotFound(String)
     }
@@ -39,88 +42,138 @@ public struct DirectBackend: SonosBackend {
     /// Asks every known speaker at once and takes the first answer.
     public func topology() async throws -> SonosSOAP.Topology {
         let hosts = Array(Set(speakers.values))
-        guard !hosts.isEmpty else { throw DirectError.noSpeakerAnswered }
-        return try await withThrowingTaskGroup(of: SonosSOAP.Topology?.self) { group in
+        guard !hosts.isEmpty else { throw DirectError.noSpeakerAnswered(reasons: ["no known speaker addresses"]) }
+        return try await withThrowingTaskGroup(of: Result<SonosSOAP.Topology, Error>.self) { group in
             for host in hosts {
-                group.addTask { try? await Self.topology(from: host) }
+                group.addTask { await Result(asyncCatching: { try await Self.topology(from: host) }) }
             }
+            var reasons: [String] = []
+            var cancelled = 0
             for try await result in group {
-                if let result {
+                switch result {
+                case .success(let topology):
                     group.cancelAll()
-                    return result
+                    return topology
+                case .failure(let error):
+                    if Self.isCancellation(error) { cancelled += 1 }
+                    reasons.append(Self.describe(error))
                 }
             }
-            throw DirectError.noSpeakerAnswered
+            // Cancelled requests aren't evidence the speakers are gone, so don't report them as silence.
+            if cancelled > 0 || Task.isCancelled { throw DirectError.cancelled }
+            throw DirectError.noSpeakerAnswered(reasons: reasons)
         }
     }
 
     public static func topology(from host: String) async throws -> SonosSOAP.Topology {
-        let response = try await SonosSOAP.call(host, SonosSOAP.zoneGroupTopology, "GetZoneGroupState")
+        let response = try await SonosSOAP.call(host, SonosSOAP.zoneGroupTopology, "GetZoneGroupState", timeout: SonosSOAP.layoutTimeout)
         guard let state = response["ZoneGroupState"] else { throw SonosSOAP.SOAPError.malformed }
         return try SonosSOAP.parseTopology(state)
+    }
+
+    /// Cancellation, as opposed to a failure: the task was cancelled, or URLSession cancelled the request (-999).
+    public static func isCancellation(_ error: Error) -> Bool {
+        if error is CancellationError { return true }
+        if let urlError = error as? URLError, urlError.code == .cancelled { return true }
+        if case DirectError.cancelled = error { return true }
+        return false
+    }
+
+    /// A short failure reason for diagnostics, such as "timed out (-1001)" or "SOAP fault 500".
+    public static func describe(_ error: Error) -> String {
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .timedOut: return "timed out (-1001)"
+            case .networkConnectionLost: return "connection lost (-1005)"
+            case .notConnectedToInternet: return "not connected (-1009)"
+            case .cannotConnectToHost: return "cannot connect (-1004)"
+            case .cannotFindHost: return "cannot find host (-1003)"
+            case .cancelled: return "cancelled (-999)"
+            default: return "URLError \(urlError.code.rawValue)"
+            }
+        }
+        if case SonosSOAP.SOAPError.fault(let status) = error { return "SOAP fault \(status)" }
+        return "\(error)"
     }
 
     // MARK: - State
 
     public func zones() async throws -> [Zone] {
+        try await snapshot().zones
+    }
+
+    /// The layout as the speakers report it, with each group's state, plus every speaker address the
+    /// layout listed (for saving, so new speakers and changed addresses are remembered).
+    ///
+    /// Throws only when no speaker answers at all (`DirectError.noSpeakerAnswered`): the one case where
+    /// there's no layout to report. A speaker that doesn't answer its state queries keeps its place in
+    /// the layout, with those values marked unread.
+    public func snapshot() async throws -> (zones: [Zone], addresses: [String: String]) {
         let topology = try await topology()
-        return try await withThrowingTaskGroup(of: (Int, Zone?).self) { group in
+        let zones = await withTaskGroup(of: (Int, Zone?).self) { group in
             for (index, topologyGroup) in topology.groups.enumerated() {
-                group.addTask { (index, try await Self.zone(for: topologyGroup)) }
+                group.addTask { (index, await Self.zone(for: topologyGroup)) }
             }
             var zones: [(Int, Zone)] = []
-            for try await (index, zone) in group {
+            for await (index, zone) in group {
                 if let zone { zones.append((index, zone)) }
             }
             return zones.sorted { $0.0 < $1.0 }.map(\.1)
         }
+        return (zones, topology.addresses)
     }
 
     /// One group's state: transport, source and group volume from the coordinator, volume and
     /// mute from each room. Stereo-pair partners, satellites and bridges are not rooms.
-    static func zone(for group: SonosSOAP.Topology.Group) async throws -> Zone? {
+    static func zone(for group: SonosSOAP.Topology.Group) async -> Zone? {
         let rooms = group.members.filter(\.isRoom)
         guard let coordinator = rooms.first(where: { $0.uuid == group.coordinator }) else { return nil }
         let instance = [("InstanceID", "0")]
         let master = [("InstanceID", "0"), ("Channel", "Master")]
 
-        async let transport = SonosSOAP.call(coordinator.host, SonosSOAP.avTransport, "GetTransportInfo", instance)
-        async let media = SonosSOAP.call(coordinator.host, SonosSOAP.avTransport, "GetMediaInfo", instance)
-        async let groupVolume = try? SonosSOAP.call(coordinator.host, SonosSOAP.groupRenderingControl, "GetGroupVolume", instance)
-        async let groupMute = try? SonosSOAP.call(coordinator.host, SonosSOAP.groupRenderingControl, "GetGroupMute", instance)
+        let timeout = SonosSOAP.readTimeout
+        async let transport = try? SonosSOAP.call(coordinator.host, SonosSOAP.avTransport, "GetTransportInfo", instance, timeout: timeout)
+        async let media = try? SonosSOAP.call(coordinator.host, SonosSOAP.avTransport, "GetMediaInfo", instance, timeout: timeout)
+        async let groupVolume = try? SonosSOAP.call(coordinator.host, SonosSOAP.groupRenderingControl, "GetGroupVolume", instance, timeout: timeout)
+        async let groupMute = try? SonosSOAP.call(coordinator.host, SonosSOAP.groupRenderingControl, "GetGroupMute", instance, timeout: timeout)
 
-        // One room failing to answer shouldn't hide the whole group; it shows defaults until the next refresh.
-        let levels = await withTaskGroup(of: (String, Int, Bool, Bool).self) { tasks in
+        // Each room's level, or nil when it didn't answer (its values are then marked unread).
+        let levels = await withTaskGroup(of: (String, (volume: Int, mute: Bool, fixed: Bool)?).self) { tasks in
             for room in rooms {
                 tasks.addTask {
-                    async let volume = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetVolume", master)
-                    async let mute = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetMute", master)
+                    async let volume = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetVolume", master, timeout: timeout)
+                    async let mute = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetMute", master, timeout: timeout)
                     // Line-level outputs such as a Connect report a fixed volume the apps must not offer to change.
-                    async let fixed = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetOutputFixed", instance)
-                    return (room.uuid, Int(await volume?["CurrentVolume"] ?? "") ?? 0, await mute?["CurrentMute"] == "1",
-                            await fixed?["CurrentFixed"] == "1")
+                    async let fixed = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetOutputFixed", instance, timeout: timeout)
+                    guard let volumeReply = await volume, let level = Int(volumeReply["CurrentVolume"] ?? ""),
+                          let muteReply = await mute else { return (room.uuid, nil) }
+                    return (room.uuid, (level, muteReply["CurrentMute"] == "1", await fixed?["CurrentFixed"] == "1"))
                 }
             }
-            var result: [String: (Int, Bool, Bool)] = [:]
-            for await (uuid, volume, muted, fixed) in tasks { result[uuid] = (volume, muted, fixed) }
+            var result: [String: (volume: Int, mute: Bool, fixed: Bool)] = [:]
+            for await (uuid, level) in tasks { if let level { result[uuid] = level } }
             return result
         }
 
-        let transportInfo = try await transport
-        let mediaInfo = try await media
-        let track = Self.track(uri: mediaInfo["CurrentURI"], metadata: mediaInfo["CurrentURIMetaData"])
-        let playback = transportInfo["CurrentTransportState"] ?? "STOPPED"
+        let transportInfo = await transport
+        let mediaInfo = await media
+        let playbackRead = transportInfo != nil && mediaInfo != nil
+        let track = Self.track(uri: mediaInfo?["CurrentURI"], metadata: mediaInfo?["CurrentURIMetaData"])
+        let playback = transportInfo?["CurrentTransportState"] ?? "STOPPED"
+        let coordinatorLevel = levels[coordinator.uuid]
         let groupState = GroupState(
-            volume: Int(await groupVolume?["CurrentVolume"] ?? "") ?? levels[coordinator.uuid]?.0 ?? 0,
-            mute: (await groupMute?["CurrentMute"]).map { $0 == "1" } ?? levels[coordinator.uuid]?.1 ?? false
+            volume: Int(await groupVolume?["CurrentVolume"] ?? "") ?? coordinatorLevel?.volume ?? 0,
+            mute: (await groupMute?["CurrentMute"]).map { $0 == "1" } ?? coordinatorLevel?.mute ?? false
         )
 
         func member(_ room: SonosSOAP.Topology.Member) -> Member {
-            Member(
+            let level = levels[room.uuid]
+            return Member(
                 roomName: room.roomName,
                 uuid: room.uuid,
-                state: PlayerState(volume: levels[room.uuid]?.0 ?? 0, mute: levels[room.uuid]?.1 ?? false, currentTrack: track,
-                                   playbackState: playback, isOutputFixed: levels[room.uuid]?.2 ?? false),
+                state: PlayerState(volume: level?.volume ?? 0, mute: level?.mute ?? false, currentTrack: playbackRead ? track : nil,
+                                   playbackState: playback, isOutputFixed: level?.fixed ?? false,
+                                   isPlaybackUnread: playbackRead ? nil : true, isLevelUnread: level == nil ? true : nil),
                 groupState: groupState
             )
         }
@@ -149,7 +202,7 @@ public struct DirectBackend: SonosBackend {
     public func favorites() async throws -> [SonosSOAP.Favorite] {
         let topology = try await topology()
         guard let host = topology.groups.flatMap(\.members).first(where: \.isRoom)?.host else {
-            throw DirectError.noSpeakerAnswered
+            throw DirectError.noSpeakerAnswered(reasons: ["layout listed no speakers"])
         }
         let response = try await SonosSOAP.call(host, SonosSOAP.contentDirectory, "Browse", [
             ("ObjectID", "FV:2"),

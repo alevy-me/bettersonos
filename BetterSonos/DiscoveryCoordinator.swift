@@ -64,8 +64,14 @@ final class DiscoveryCoordinator: ObservableObject {
     static let throttle: TimeInterval = 10 * 60
     static let coalesceDelay: Duration = .milliseconds(500)
     static let failureRetryInterval: TimeInterval = 30
-    /// Posted by a local network's view model when the speakers stop answering. `object` is the household ID.
+    /// Posted by a local network's view model once its speakers' silence is confirmed (three failed
+    /// scheduled polls). `object` is the household ID.
     static let localNetworkUnreachable = Notification.Name("BonTonLocalNetworkUnreachable")
+    /// Posted when those speakers answer again.
+    static let localNetworkReachable = Notification.Name("BonTonLocalNetworkReachable")
+    /// Households whose view model has confirmed silence. Only these may go from available to
+    /// unavailable: a single failed discovery probe never makes a loaded network flicker.
+    private var confirmedUnreachable: Set<String> = []
 
     init(networkStore: NetworkConfigStore, discover: @escaping @MainActor () async -> DiscoveryOutcome = { await SonosDiscovery.discover() }) {
         self.networkStore = networkStore
@@ -112,10 +118,21 @@ final class DiscoveryCoordinator: ObservableObject {
 
         NotificationCenter.default.publisher(for: Self.localNetworkUnreachable)
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] _ in
-                guard let self, Date().timeIntervalSince(self.lastFailureTriggered) >= Self.failureRetryInterval else { return }
+            .sink { [weak self] note in
+                guard let self else { return }
+                if let householdID = note.object as? String { self.confirmedUnreachable.insert(householdID) }
+                guard Date().timeIntervalSince(self.lastFailureTriggered) >= Self.failureRetryInterval else { return }
                 self.lastFailureTriggered = Date()
                 self.request(force: true)
+            }
+            .store(in: &cancellables)
+
+        NotificationCenter.default.publisher(for: Self.localNetworkReachable)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] note in
+                guard let self, let householdID = note.object as? String else { return }
+                self.confirmedUnreachable.remove(householdID)
+                self.reachableHouseholds.insert(householdID)
             }
             .store(in: &cancellables)
     }
@@ -206,6 +223,9 @@ final class DiscoveryCoordinator: ObservableObject {
         for config in networkStore.configs where config.isLocal {
             guard let householdID = config.householdID, !reachable.contains(householdID) else { continue }
             if (try? await DirectBackend(speakers: config.speakerAddresses).topology()) != nil {
+                reachable.insert(householdID)
+            } else if reachableHouseholds.contains(householdID), !confirmedUnreachable.contains(householdID) {
+                // Available until its view model confirms the silence; one missed probe isn't evidence.
                 reachable.insert(householdID)
             }
         }

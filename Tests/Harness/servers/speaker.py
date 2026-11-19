@@ -1,8 +1,9 @@
 # A fake Sonos household: one HTTP port per player, answering the UPnP SOAP actions BonTon's
 # DirectBackend uses, with live state. The layout covers a stereo pair (hidden partner), a
 # home-theater satellite, a Bridge, a two-room group, a room whose volume query fails, and a
-# Connect-style player with fixed line-level output.
-# Usage: speaker.py BASE_PORT LOG     (players listen on BASE_PORT .. BASE_PORT+7)
+# Connect-style player with fixed line-level output, and a player that is in the layout but answers
+# nothing else (going to sleep, rebooting, out of range).
+# Usage: speaker.py BASE_PORT LOG     (players listen on BASE_PORT .. BASE_PORT+8)
 import http.server, socketserver, sys, html, re, threading
 BASE = int(sys.argv[1])
 log = open(sys.argv[2], "a")
@@ -18,11 +19,13 @@ PLAYERS = {
     "RINCON_BATH01400":   dict(port=5, room="Upstairs Bathroom", volume=None, mute=False, fixed=False),
     "RINCON_BRIDGE01400": dict(port=6, room="Bridge", volume=0, mute=False, fixed=False, bridge=True),
     "RINCON_BIG01400":    dict(port=7, room="Big Speakers", volume=100, mute=False, fixed=True),
+    "RINCON_PATIO01400":  dict(port=8, room="Patio", volume=None, mute=False, fixed=False, silent=True),
 }
 # Group membership: player -> coordinator. Satellites and hidden partners follow their room.
 COORD = {"RINCON_K01400": "RINCON_K01400", "RINCON_TVL01400": "RINCON_TVL01400", "RINCON_TVR01400": "RINCON_TVL01400",
          "RINCON_BED01400": "RINCON_BED01400", "RINCON_BATH01400": "RINCON_BED01400",
-         "RINCON_BRIDGE01400": "RINCON_BRIDGE01400", "RINCON_BIG01400": "RINCON_BIG01400"}
+         "RINCON_BRIDGE01400": "RINCON_BRIDGE01400", "RINCON_BIG01400": "RINCON_BIG01400",
+         "RINCON_PATIO01400": "RINCON_PATIO01400"}
 MEDIA = {  # coordinator: [uri, title, transport state, metadata]
     "RINCON_K01400": ["x-sonos-vli:RINCON_K01400:2,spotify:abc", "Spotify", "PAUSED_PLAYBACK", None],
     "RINCON_TVL01400": ["x-rincon-stream:RINCON_TVL01400:0", "Line-In", "PAUSED_PLAYBACK", None],
@@ -84,6 +87,7 @@ def handler_for(uuid):
             with lock:
                 coordinator = COORD.get(uuid, uuid)
                 if action == "GetZoneGroupState": return self.reply(action, {"ZoneGroupState": html.escape(topology())})
+                if p.get("silent"): return self.reply(action, {}, 500)
                 if action == "GetTransportInfo": return self.reply(action, {"CurrentTransportState": MEDIA.get(uuid, ["", "", "STOPPED", None])[2]})
                 if action == "GetMediaInfo":
                     if uuid in MEDIA:

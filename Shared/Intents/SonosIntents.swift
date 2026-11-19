@@ -117,6 +117,9 @@ struct WhatsPlayingIntent: AppIntent {
         let answer: String
         if let room {
             let target = try await SonosDirectory.locate(room)
+            if target.coordinator.state.isPlaybackUnread == true {
+                throw SonosIntentError.notResponding(target.roomName)
+            }
             if target.isPlaying {
                 let track = SonosDirectory.describe(target.coordinator.state.currentTrack, on: target.config) ?? "something"
                 answer = "\(target.roomName) is playing \(track)."
@@ -142,6 +145,10 @@ struct WhatsPlayingIntent: AppIntent {
 
 /// Shared by the volume intents: checks fixed volume, then sets an absolute level.
 private func setVolume(_ located: SonosDirectory.Located, to level: Int) async throws -> Int {
+    // A room that didn't answer has no current volume to adjust from; say so, not "fixed volume".
+    guard located.member.state.isLevelUnread != true else {
+        throw SonosIntentError.notResponding(located.roomName)
+    }
     guard !located.config.isVolumeDisabled(for: located.member) else {
         throw SonosIntentError.fixedVolume(located.roomName)
     }

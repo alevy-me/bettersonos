@@ -47,8 +47,16 @@ public enum SonosSOAP {
         return URLSession(configuration: config)
     }()
 
+    /// Reads (layout and state) give up quickly: a healthy speaker answers in milliseconds, under a
+    /// second even through the watch's relay, so a slow one shouldn't stall a refresh.
+    public static let readTimeout: TimeInterval = 2
+    /// The layout read decides whether the network is reachable at all, so it gets longer: on the
+    /// watch, the first request after the route changes (iPhone relay to Wi-Fi) can take 5 to 9 s.
+    public static let layoutTimeout: TimeInterval = 5
+
     /// Calls an action on a speaker ("192.168.1.20:1400") and returns the response's arguments by name.
-    public static func call(_ host: String, _ service: Service, _ action: String, _ arguments: [(String, String)] = []) async throws -> [String: String] {
+    public static func call(_ host: String, _ service: Service, _ action: String, _ arguments: [(String, String)] = [],
+                            timeout: TimeInterval = 4) async throws -> [String: String] {
         guard let url = URL(string: "http://\(host)\(service.path)") else { throw SOAPError.badAddress(host) }
         let args = arguments.map { "<\($0.0)>\(escape($0.1))</\($0.0)>" }.joined()
         let body = """
@@ -56,7 +64,7 @@ public enum SonosSOAP {
         <s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/" s:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/">\
         <s:Body><u:\(action) xmlns:u="\(service.urn)">\(args)</u:\(action)></s:Body></s:Envelope>
         """
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = "POST"
         request.setValue("text/xml; charset=\"utf-8\"", forHTTPHeaderField: "Content-Type")
         request.setValue("\"\(service.urn)#\(action)\"", forHTTPHeaderField: "SOAPACTION")

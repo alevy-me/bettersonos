@@ -8,11 +8,11 @@ let backend = DirectBackend(speakers: ["RINCON_DEAD01400": "127.0.0.1:9", "RINCO
 Task {
     do {
         let topology = try await backend.topology()
-        check(topology.groups.count == 4, "layout read past a dead address: \(topology.groups.count) groups")
-        check(topology.addresses.count == 6, "every speaker's address learned, hidden ones included: \(topology.addresses.count)")
+        check(topology.groups.count == 5, "layout read past a dead address: \(topology.groups.count) groups")
+        check(topology.addresses.count == 7, "every speaker's address learned, hidden ones included: \(topology.addresses.count)")
         let zones = try await backend.zones()
         let names = zones.map(\.coordinator.roomName)
-        check(names == ["Kitchen", "TV Room", "Bedroom"], "rooms, with the Bridge left out: \(names)")
+        check(names == ["Bedroom", "Big Speakers", "Kitchen", "TV Room"], "rooms, with the Bridge left out: \(names)")
         let tv = zones.first { $0.coordinator.roomName == "TV Room" }!
         check(tv.members.count == 1 && tv.coordinator.uuid == "RINCON_TVL01400", "stereo pair is one room, controlled through the visible speaker")
         check(tv.coordinator.state.mute && tv.coordinator.state.volume == 45, "TV Room volume 45, muted")
@@ -25,6 +25,10 @@ Task {
         check(bedroom.coordinator.groupState?.volume == 40, "group volume from the coordinator: \(bedroom.coordinator.groupState?.volume ?? -1)")
         let bath = bedroom.members.first { $0.roomName == "Upstairs Bathroom" }!
         check(bath.state.volume == 0, "a room whose volume query fails still appears, with a default")
+        let big = zones.first { $0.coordinator.roomName == "Big Speakers" }!
+        check(big.coordinator.state.isOutputFixed == true && kitchen.coordinator.state.isOutputFixed == false, "fixed output read from the speaker: Big Speakers fixed, Kitchen not")
+        let plain = NetworkConfig(id: UUID(), displayName: "T", baseURL: "", enabled: true, showDefaultPresetsForThisNetwork: false)
+        check(plain.isVolumeDisabled(for: big.coordinator) && !plain.isVolumeDisabled(for: kitchen.coordinator), "fixed output grays out volume with no settings")
         let favorites = try await backend.favoriteNames()
         check(favorites == ["WWNO", "FIP", "Radio Woodstock 100.1"], "favorites browsed: \(favorites)")
         let dead = DirectBackend(speakers: ["x": "127.0.0.1:9"])

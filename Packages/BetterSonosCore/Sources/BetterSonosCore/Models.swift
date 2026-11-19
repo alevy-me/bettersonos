@@ -183,6 +183,12 @@ public struct NetworkConfig: Codable, Identifiable, Hashable, Sendable {
         Constants.fixedVolumeUUIDs.contains(uuid) || manuallyDisabledVolumeUUIDs.contains(uuid)
     }
 
+    /// True when the apps should gray out a speaker's volume: a known fixed-volume device, one the
+    /// user disabled, or one the speaker itself reports as fixed (direct networks).
+    public func isVolumeDisabled(for member: Member) -> Bool {
+        isVolumeDisabled(forPlayer: member.uuid) || member.state.isOutputFixed == true
+    }
+
     /// True when the station list for this network would otherwise be empty, which forces the default presets on.
     public static func isForcedDefault(remoteCSVURL: String?, manualStations: [Station], favorites: [Station]?, disabledFavoriteURLs: Set<String>) -> Bool {
         let customCSVEmpty = (remoteCSVURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "").isEmpty
@@ -380,6 +386,8 @@ public struct PlayerState: Codable, Sendable {
     public let mute: Bool
     public let currentTrack: Track?
     public let playbackState: String
+    /// The speaker reports a fixed (line-level) output. Read directly from the speaker; servers don't report it.
+    public var isOutputFixed: Bool? = nil
 
     /// Live radio can't pause on Sonos: "pausing" it stops the transport, and `play` alone may not restart it.
     public var isStopped: Bool { playbackState == "STOPPED" }

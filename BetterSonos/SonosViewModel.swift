@@ -162,7 +162,7 @@ final class SonosViewModel: ObservableObject {
 
             for member in [coordinator] + zone.members {
                 let room = member.roomName
-                newVolumeDisabled[room] = config?.isVolumeDisabled(forPlayer: member.uuid) ?? Constants.fixedVolumeUUIDs.contains(member.uuid)
+                newVolumeDisabled[room] = config?.isVolumeDisabled(for: member) ?? (Constants.fixedVolumeUUIDs.contains(member.uuid) || member.state.isOutputFixed == true)
                 newVolume[room] = member.state.volume
                 newMuted[room] = member.state.mute
                 newPlayback[room] = member.state.playbackState

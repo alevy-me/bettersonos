@@ -228,7 +228,7 @@ final class WatchNetworkController: ObservableObject {
 
             var seen = Set<String>()
             let players = ([coordinator] + zone.members).filter { seen.insert($0.roomName).inserted }
-            let groupVolumeDisabled = players.allSatisfy { config.isVolumeDisabled(forPlayer: $0.uuid) }
+            let groupVolumeDisabled = players.allSatisfy { config.isVolumeDisabled(for: $0) }
             for member in players {
                 let roomTarget = ControlTarget.room(member.roomName)
                 result.append(RoomState(
@@ -243,7 +243,7 @@ final class WatchNetworkController: ObservableObject {
                     isStopped: coordinator.state.isStopped,
                     nowPlaying: nowPlaying,
                     track: coordinator.state.currentTrack,
-                    isVolumeDisabled: config.isVolumeDisabled(forPlayer: member.uuid),
+                    isVolumeDisabled: config.isVolumeDisabled(for: member),
                     isGroupVolumeDisabled: groupVolumeDisabled
                 ))
             }

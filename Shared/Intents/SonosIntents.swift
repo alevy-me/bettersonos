@@ -142,7 +142,7 @@ struct WhatsPlayingIntent: AppIntent {
 
 /// Shared by the volume intents: checks fixed volume, then sets an absolute level.
 private func setVolume(_ located: SonosDirectory.Located, to level: Int) async throws -> Int {
-    guard !located.config.isVolumeDisabled(forPlayer: located.member.uuid) else {
+    guard !located.config.isVolumeDisabled(for: located.member) else {
         throw SonosIntentError.fixedVolume(located.roomName)
     }
     let value = max(0, min(100, level))

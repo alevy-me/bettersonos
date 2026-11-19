@@ -12,7 +12,13 @@ let base = CommandLine.arguments[1]
     weak var weakVM = vm
     try? await Task.sleep(for: .seconds(2))
     check(vm!.status == .connected, "local network connects with no server: \(vm!.status)")
-    check(vm!.groups.map(\.coordinator) == ["Bedroom", "Kitchen", "TV Room"], "rooms from the speakers: \(vm!.groups.map(\.coordinator))")
+    check(vm!.groups.map(\.coordinator) == ["Bedroom", "Big Speakers", "Kitchen", "TV Room"], "rooms from the speakers: \(vm!.groups.map(\.coordinator))")
+    check(vm!.volumeDisabled["Big Speakers"] == true && vm!.volumeDisabled["Kitchen"] == false, "Big Speakers grayed out as fixed, Kitchen not")
+    vm!.adjustVolume(room: "Kitchen", delta: 5)
+    vm!.toggleMute(room: "TV Room")
+    try? await Task.sleep(for: .seconds(1.5))
+    check(vm!.volume["Kitchen"] == 39, "volume up from the app reaches the speaker: \(vm!.volume["Kitchen"] ?? -1)")
+    check(vm!.isMuted["TV Room"] == false, "unmute from the app reaches the speaker")
     check(vm!.stationDisplay(for: "Bedroom") == "Radio Woodstock 100.1", "Bedroom shows its station: \(vm!.stationDisplay(for: "Bedroom"))")
     check(store.configs.first?.lastKnownServerFavorites?.map(\.name) == ["FIP", "Radio Woodstock 100.1", "WWNO"], "favorites merged from the speakers")
     vm = nil

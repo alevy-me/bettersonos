@@ -23,6 +23,7 @@ import Foundation
 public struct DirectBackend: SonosBackend {
     public enum DirectError: Error {
         case noSpeakerAnswered
+        case roomNotFound(String)
     }
 
     /// Known speaker addresses ("192.168.1.20:1400") by player ID. Any one that answers is enough.
@@ -88,16 +89,19 @@ public struct DirectBackend: SonosBackend {
         async let groupMute = try? SonosSOAP.call(coordinator.host, SonosSOAP.groupRenderingControl, "GetGroupMute", instance)
 
         // One room failing to answer shouldn't hide the whole group; it shows defaults until the next refresh.
-        let levels = await withTaskGroup(of: (String, Int, Bool).self) { tasks in
+        let levels = await withTaskGroup(of: (String, Int, Bool, Bool).self) { tasks in
             for room in rooms {
                 tasks.addTask {
                     async let volume = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetVolume", master)
                     async let mute = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetMute", master)
-                    return (room.uuid, Int(await volume?["CurrentVolume"] ?? "") ?? 0, await mute?["CurrentMute"] == "1")
+                    // Line-level outputs such as a Connect report a fixed volume the apps must not offer to change.
+                    async let fixed = try? SonosSOAP.call(room.host, SonosSOAP.renderingControl, "GetOutputFixed", instance)
+                    return (room.uuid, Int(await volume?["CurrentVolume"] ?? "") ?? 0, await mute?["CurrentMute"] == "1",
+                            await fixed?["CurrentFixed"] == "1")
                 }
             }
-            var result: [String: (Int, Bool)] = [:]
-            for await (uuid, volume, muted) in tasks { result[uuid] = (volume, muted) }
+            var result: [String: (Int, Bool, Bool)] = [:]
+            for await (uuid, volume, muted, fixed) in tasks { result[uuid] = (volume, muted, fixed) }
             return result
         }
 
@@ -114,7 +118,8 @@ public struct DirectBackend: SonosBackend {
             Member(
                 roomName: room.roomName,
                 uuid: room.uuid,
-                state: PlayerState(volume: levels[room.uuid]?.0 ?? 0, mute: levels[room.uuid]?.1 ?? false, currentTrack: track, playbackState: playback),
+                state: PlayerState(volume: levels[room.uuid]?.0 ?? 0, mute: levels[room.uuid]?.1 ?? false, currentTrack: track,
+                                   playbackState: playback, isOutputFixed: levels[room.uuid]?.2 ?? false),
                 groupState: groupState
             )
         }
@@ -155,16 +160,96 @@ public struct DirectBackend: SonosBackend {
         return SonosSOAP.didlTitles(response["Result"] ?? "")
     }
 
-    // MARK: - Commands (phase 2)
+    // MARK: - Commands
 
-    // Not yet implemented: direct networks are read-only until direct commands land.
-    @discardableResult public func play(coordinator: String) async -> Bool { false }
-    @discardableResult public func pause(coordinator: String) async -> Bool { false }
-    @discardableResult public func setVolume(_ level: Int, room: String) async -> Bool { false }
-    @discardableResult public func setGroupVolume(_ level: Int, coordinator: String) async -> Bool { false }
-    @discardableResult public func setMute(_ muted: Bool, room: String) async -> Bool { false }
-    @discardableResult public func setGroupMute(_ muted: Bool, coordinator: String) async -> Bool { false }
-    @discardableResult public func join(room: String, to target: String) async -> Bool { false }
-    @discardableResult public func leave(room: String) async -> Bool { false }
+    /// A room's speaker and its group's coordinator, from the current layout. Rooms are named as the
+    /// speakers name them; the visible speaker of a stereo pair is the one that takes commands.
+    private func locate(_ roomName: String) async throws -> (room: SonosSOAP.Topology.Member, coordinator: SonosSOAP.Topology.Member, topology: SonosSOAP.Topology) {
+        let topology = try await topology()
+        for group in topology.groups {
+            let rooms = group.members.filter(\.isRoom)
+            if let room = rooms.first(where: { $0.roomName == roomName }),
+               let coordinator = rooms.first(where: { $0.uuid == group.coordinator }) {
+                return (room, coordinator, topology)
+            }
+        }
+        throw DirectError.roomNotFound(roomName)
+    }
+
+    /// Runs a command and reports success; failures are logged by the caller's refresh, not thrown.
+    private func attempt(_ body: () async throws -> Void) async -> Bool {
+        do { try await body(); return true } catch { return false }
+    }
+
+    private static let instance = ("InstanceID", "0")
+    private static let master = ("Channel", "Master")
+
+    @discardableResult public func play(coordinator: String) async -> Bool {
+        await attempt {
+            let target = try await locate(coordinator).coordinator
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "Play", [Self.instance, ("Speed", "1")])
+        }
+    }
+
+    @discardableResult public func pause(coordinator: String) async -> Bool {
+        await attempt {
+            let target = try await locate(coordinator).coordinator
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "Pause", [Self.instance])
+        }
+    }
+
+    @discardableResult public func setVolume(_ level: Int, room: String) async -> Bool {
+        await attempt {
+            let target = try await locate(room).room
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.renderingControl, "SetVolume",
+                                         [Self.instance, Self.master, ("DesiredVolume", "\(max(0, min(100, level)))")])
+        }
+    }
+
+    @discardableResult public func setGroupVolume(_ level: Int, coordinator: String) async -> Bool {
+        await attempt {
+            let target = try await locate(coordinator).coordinator
+            // The snapshot records each member's share, so the group keeps its balance as it scales.
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.groupRenderingControl, "SnapshotGroupVolume", [Self.instance])
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.groupRenderingControl, "SetGroupVolume",
+                                         [Self.instance, ("DesiredVolume", "\(max(0, min(100, level)))")])
+        }
+    }
+
+    @discardableResult public func setMute(_ muted: Bool, room: String) async -> Bool {
+        await attempt {
+            let target = try await locate(room).room
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.renderingControl, "SetMute",
+                                         [Self.instance, Self.master, ("DesiredMute", muted ? "1" : "0")])
+        }
+    }
+
+    @discardableResult public func setGroupMute(_ muted: Bool, coordinator: String) async -> Bool {
+        await attempt {
+            let target = try await locate(coordinator).coordinator
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.groupRenderingControl, "SetGroupMute",
+                                         [Self.instance, ("DesiredMute", muted ? "1" : "0")])
+        }
+    }
+
+    @discardableResult public func join(room: String, to target: String) async -> Bool {
+        await attempt {
+            let joiner = try await locate(room).room
+            // Join the target room's group, through that group's coordinator.
+            let leader = try await locate(target).coordinator
+            guard joiner.uuid != leader.uuid else { return }
+            _ = try await SonosSOAP.call(joiner.host, SonosSOAP.avTransport, "SetAVTransportURI",
+                                         [Self.instance, ("CurrentURI", "x-rincon:\(leader.uuid)"), ("CurrentURIMetaData", "")])
+        }
+    }
+
+    @discardableResult public func leave(room: String) async -> Bool {
+        await attempt {
+            let target = try await locate(room).room
+            _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "BecomeCoordinatorOfStandaloneGroup", [Self.instance])
+        }
+    }
+
+    // Presets are direct-control phase 3: favorites need their metadata, and streams need DIDL.
     @discardableResult public func loadPreset(_ station: Station, coordinator: String) async -> Bool { false }
 }

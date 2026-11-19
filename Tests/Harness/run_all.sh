@@ -39,6 +39,7 @@ build radio-siri    ${INTENTS[@]} $H/stub.swift $H/radio-siri/main.swift
 build now-playing   $H/now-playing/main.swift
 build direct        $H/direct/main.swift
 build direct-commands $H/direct-commands/main.swift
+build direct-presets $H/direct-presets/main.swift
 build vm-local      SonosViewModel.swift $H/stub.swift $H/discovery-stub.swift $H/shim.swift $H/vm-local/main.swift
 strip $R/BetterSonos/SonosDiscovery.swift > SonosDiscovery.swift
 strip $R/BetterSonos/DiscoveryCoordinator.swift > DiscoveryCoordinator.swift
@@ -60,6 +61,7 @@ serve speaker.py 18820 /dev/null       # players on 18820-18827
 serve speaker.py 18830 /dev/null       # players on 18830-18837
 serve grouped.py 18840 /dev/null
 serve speaker.py 18850 /dev/null       # players on 18850-18857
+serve speaker.py 18860 /dev/null       # players on 18860-18867
 sleep 1
 
 run() { local name=$1; shift; echo "== $name"
@@ -80,6 +82,7 @@ run "stopped radio, Siri"           radio-siri 18810
 run "now playing, captured states"  now-playing $H/fixtures/captured-states.jsonl
 run "direct backend"                direct 18820
 run "direct commands"               direct-commands 18850
+run "direct presets"                direct-presets 18860
 run "iOS view model, local network" vm-local 18830
 run "discovery triggers"            discovery 18840
 

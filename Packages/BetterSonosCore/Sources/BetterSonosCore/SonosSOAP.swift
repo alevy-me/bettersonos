@@ -118,6 +118,34 @@ public enum SonosSOAP {
         return DIDLTitles.parse(metadata).first
     }
 
+    /// A Sonos favorite as the speakers store it: the URI and metadata needed to play it.
+    public struct Favorite: Sendable, Equatable {
+        public let title: String
+        public let uri: String
+        public let metadata: String
+
+        /// Playlists, albums and saved queues must go through the queue; streams load directly.
+        public var isContainer: Bool {
+            let lower = uri.lowercased()
+            return lower.hasPrefix("x-rincon-cpcontainer:") || lower.hasPrefix("x-rincon-playlist:")
+                || lower.contains("savedqueues") || metadata.contains("object.container")
+        }
+    }
+
+    /// The items in a favorites (`FV:2`) browse result.
+    public static func parseFavorites(_ didl: String) -> [Favorite] {
+        FavoritesParser.parse(didl)
+    }
+
+    /// Minimal metadata for a plain stream, so the speaker reports `title` as the source's name.
+    public static func streamMetadata(title: String) -> String {
+        "<DIDL-Lite xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:upnp=\"urn:schemas-upnp-org:metadata-1-0/upnp/\" "
+            + "xmlns:r=\"urn:schemas-rinconnetworks-com:metadata-1-0/\" xmlns=\"urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/\">"
+            + "<item id=\"R:0/0/0\" parentID=\"R:0/0\" restricted=\"true\"><dc:title>\(escape(title))</dc:title>"
+            + "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
+            + "<desc id=\"cdudn\" nameSpace=\"urn:schemas-rinconnetworks-com:metadata-1-0/\">SA_RINCON65031_</desc></item></DIDL-Lite>"
+    }
+
     /// Every item `dc:title` in a DIDL-Lite result, such as a favorites browse.
     public static func didlTitles(_ metadata: String) -> [String] {
         DIDLTitles.parse(metadata)
@@ -222,6 +250,56 @@ private final class DIDLTitles: NSObject, XMLParserDelegate {
             let title = text.trimmingCharacters(in: .whitespacesAndNewlines)
             if !title.isEmpty { titles.append(title) }
             inTitle = false
+        }
+    }
+}
+
+/// Reads `<item>` entries from a favorites browse: title, `res` (URI) and `r:resMD` (the metadata
+/// to play it, itself DIDL, arriving as text).
+private final class FavoritesParser: NSObject, XMLParserDelegate {
+    private var favorites: [SonosSOAP.Favorite] = []
+    private var inItem = false
+    private var field: String?
+    private var text = ""
+    private var title = "", uri = "", metadata = ""
+
+    static func parse(_ didl: String) -> [SonosSOAP.Favorite] {
+        let collector = FavoritesParser()
+        let parser = XMLParser(data: Data(didl.utf8))
+        parser.delegate = collector
+        _ = parser.parse()
+        return collector.favorites
+    }
+
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String] = [:]) {
+        switch name {
+        case "item":
+            inItem = true
+            title = ""; uri = ""; metadata = ""
+        case "dc:title", "res", "r:resMD":
+            guard inItem else { break }
+            field = name
+            text = ""
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) { if field != nil { text += string } }
+
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        if name == field {
+            switch name {
+            case "dc:title": title = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            case "res": uri = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            default: metadata = text
+            }
+            field = nil
+        } else if name == "item" {
+            inItem = false
+            if !title.isEmpty, !uri.isEmpty {
+                favorites.append(.init(title: title, uri: uri, metadata: metadata))
+            }
         }
     }
 }

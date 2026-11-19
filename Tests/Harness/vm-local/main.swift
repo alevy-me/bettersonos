@@ -20,7 +20,7 @@ let base = CommandLine.arguments[1]
     check(vm!.volume["Kitchen"] == 39, "volume up from the app reaches the speaker: \(vm!.volume["Kitchen"] ?? -1)")
     check(vm!.isMuted["TV Room"] == false, "unmute from the app reaches the speaker")
     check(vm!.stationDisplay(for: "Bedroom") == "Radio Woodstock 100.1", "Bedroom shows its station: \(vm!.stationDisplay(for: "Bedroom"))")
-    check(store.configs.first?.lastKnownServerFavorites?.map(\.name) == ["FIP", "Radio Woodstock 100.1", "WWNO"], "favorites merged from the speakers")
+    check(store.configs.first?.lastKnownServerFavorites?.map(\.name) == ["Dinner Jazz", "FIP", "Radio Woodstock 100.1", "WWNO"], "favorites merged from the speakers")
     vm = nil
     try? await Task.sleep(for: .milliseconds(500))
     check(weakVM == nil, "local view model deallocates")

@@ -23,12 +23,26 @@ PLAYERS = {
 COORD = {"RINCON_K01400": "RINCON_K01400", "RINCON_TVL01400": "RINCON_TVL01400", "RINCON_TVR01400": "RINCON_TVL01400",
          "RINCON_BED01400": "RINCON_BED01400", "RINCON_BATH01400": "RINCON_BED01400",
          "RINCON_BRIDGE01400": "RINCON_BRIDGE01400", "RINCON_BIG01400": "RINCON_BIG01400"}
-MEDIA = {  # coordinator: [uri, title, transport state]
-    "RINCON_K01400": ["x-sonos-vli:RINCON_K01400:2,spotify:abc", "Spotify", "PAUSED_PLAYBACK"],
-    "RINCON_TVL01400": ["x-rincon-stream:RINCON_TVL01400:0", "Line-In", "PAUSED_PLAYBACK"],
-    "RINCON_BED01400": ["x-sonosapi-stream:s1?sid=254", "Radio Woodstock 100.1", "PLAYING"],
-    "RINCON_BIG01400": ["x-sonosapi-stream:s2?sid=254", "Classic American Top 40", "STOPPED"],
+MEDIA = {  # coordinator: [uri, title, transport state, metadata]
+    "RINCON_K01400": ["x-sonos-vli:RINCON_K01400:2,spotify:abc", "Spotify", "PAUSED_PLAYBACK", None],
+    "RINCON_TVL01400": ["x-rincon-stream:RINCON_TVL01400:0", "Line-In", "PAUSED_PLAYBACK", None],
+    "RINCON_BED01400": ["x-sonosapi-stream:s1?sid=254", "Radio Woodstock 100.1", "PLAYING", None],
+    "RINCON_BIG01400": ["x-sonosapi-stream:s2?sid=254", "Classic American Top 40", "STOPPED", None],
 }
+# Like real speakers: a stopped live stream ignores Play until it is reloaded with SetAVTransportURI.
+RELOADED = set()
+QUEUE = {}  # coordinator: [enqueued uris]
+FAVORITES = [  # title, uri, upnp class
+    ("WWNO", "x-sonosapi-stream:s3?sid=254&flags=8224&sn=0", "object.item.audioItem.audioBroadcast"),
+    ("FIP", "x-rincon-mp3radio://https://example.com/fip-hifi.aac", "object.item.audioItem.audioBroadcast"),
+    ("Radio Woodstock 100.1", "x-sonosapi-stream:s1?sid=254&flags=8224&sn=0", "object.item.audioItem.audioBroadcast"),
+    ("Dinner Jazz", "x-rincon-cpcontainer:1006206cplaylist%3a123?sid=12&flags=8300&sn=1", "object.container.playlistContainer"),
+]
+def is_radio(uri): return uri.startswith(("x-sonosapi-stream:", "x-rincon-mp3radio:", "x-sonosapi-radio:", "hls-radio:"))
+def resmd(title, cls): return f'<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/"><item id="F" parentID="F" restricted="true"><dc:title>{title}</dc:title><upnp:class>{cls}</upnp:class></item></DIDL-Lite>'
+def title_of(metadata):
+    m = re.search(r"<dc:title>(.*?)</dc:title>", metadata or "")
+    return html.unescape(m.group(1)) if m else None
 GROUP = {}  # coordinator: [volume, mute]
 
 def loc(uuid): return f"http://127.0.0.1:{BASE + PLAYERS[uuid]['port']}/xml/device_description.xml"
@@ -70,11 +84,11 @@ def handler_for(uuid):
             with lock:
                 coordinator = COORD.get(uuid, uuid)
                 if action == "GetZoneGroupState": return self.reply(action, {"ZoneGroupState": html.escape(topology())})
-                if action == "GetTransportInfo": return self.reply(action, {"CurrentTransportState": MEDIA.get(uuid, ["", "", "STOPPED"])[2]})
+                if action == "GetTransportInfo": return self.reply(action, {"CurrentTransportState": MEDIA.get(uuid, ["", "", "STOPPED", None])[2]})
                 if action == "GetMediaInfo":
                     if uuid in MEDIA:
-                        uri, title, _ = MEDIA[uuid]
-                        return self.reply(action, {"CurrentURI": html.escape(uri), "CurrentURIMetaData": didl(title)})
+                        uri, title, _, metadata = MEDIA[uuid]
+                        return self.reply(action, {"CurrentURI": html.escape(uri), "CurrentURIMetaData": html.escape(metadata) if metadata else didl(title)})
                     return self.reply(action, {"CurrentURI": f"x-rincon:{coordinator}", "CurrentURIMetaData": ""})
                 if action == "GetVolume":
                     return self.reply(action, {}, 500) if p["volume"] is None else self.reply(action, {"CurrentVolume": str(p["volume"])})
@@ -83,13 +97,28 @@ def handler_for(uuid):
                 if action == "GetGroupVolume": return self.reply(action, {"CurrentVolume": str(GROUP.get(uuid, [40, False])[0])})
                 if action == "GetGroupMute": return self.reply(action, {"CurrentMute": "1" if GROUP.get(uuid, [40, False])[1] else "0"})
                 if action == "Browse":
-                    items = "".join(f"<item><dc:title>{t}</dc:title></item>" for t in ["WWNO", "FIP", "Radio Woodstock 100.1"])
-                    return self.reply(action, {"Result": html.escape(f'<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/">{items}</DIDL-Lite>'), "NumberReturned": "3"})
+                    items = "".join(
+                        f'<item id="FV:2/{i}" parentID="FV:2" restricted="false"><dc:title>{html.escape(t)}</dc:title>'
+                        f'<upnp:class>object.itemobject.item.sonos-favorite</upnp:class><res protocolInfo="x">{html.escape(u)}</res>'
+                        f'<r:resMD>{html.escape(resmd(t, c))}</r:resMD></item>'
+                        for i, (t, u, c) in enumerate(FAVORITES))
+                    result = f'<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns:r="urn:schemas-rinconnetworks-com:metadata-1-0/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/">{items}</DIDL-Lite>'
+                    return self.reply(action, {"Result": html.escape(result), "NumberReturned": str(len(FAVORITES))})
                 # Commands. Like real speakers, transport commands only work on a coordinator.
                 if action in ("Play", "Pause"):
                     if uuid not in MEDIA: return self.reply(action, {}, 500)
-                    MEDIA[uuid][2] = "PLAYING" if action == "Play" else "PAUSED_PLAYBACK"
+                    media = MEDIA[uuid]
+                    if action == "Pause":
+                        # Live radio can't pause: it stops, and needs reloading before Play works again.
+                        media[2] = "STOPPED" if is_radio(media[0]) else "PAUSED_PLAYBACK"
+                        RELOADED.discard(uuid)
+                    elif media[2] == "STOPPED" and is_radio(media[0]) and uuid not in RELOADED:
+                        pass  # accepted, but nothing starts
+                    else:
+                        media[2] = "PLAYING"
                     return self.reply(action)
+                if action == "RemoveAllTracksFromQueue": QUEUE[uuid] = []; return self.reply(action)
+                if action == "AddURIToQueue": QUEUE.setdefault(uuid, []).append(arg(body, "EnqueuedURI")); return self.reply(action)
                 if action == "SetVolume":
                     if p["fixed"]: return self.reply(action, {}, 500)
                     p["volume"] = int(arg(body, "DesiredVolume")); return self.reply(action)
@@ -103,10 +132,14 @@ def handler_for(uuid):
                         COORD[uuid] = uri[len("x-rincon:"):]
                         MEDIA.pop(uuid, None)
                         return self.reply(action)
-                    MEDIA[uuid] = [uri, "Stream", "STOPPED"]; return self.reply(action)
+                    metadata = arg(body, "CurrentURIMetaData")
+                    title = "Queue" if uri.startswith("x-rincon-queue:") else (title_of(metadata) or "Stream")
+                    MEDIA[uuid] = [uri, title, "STOPPED", metadata or None]
+                    RELOADED.add(uuid)
+                    return self.reply(action)
                 if action == "BecomeCoordinatorOfStandaloneGroup":
                     COORD[uuid] = uuid
-                    MEDIA.setdefault(uuid, ["", "", "STOPPED"])
+                    MEDIA.setdefault(uuid, ["", "", "STOPPED", None])
                     return self.reply(action)
             self.reply(action, {}, 500)
     return H

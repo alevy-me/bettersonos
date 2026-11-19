@@ -30,7 +30,7 @@ Task {
         let plain = NetworkConfig(id: UUID(), displayName: "T", baseURL: "", enabled: true, showDefaultPresetsForThisNetwork: false)
         check(plain.isVolumeDisabled(for: big.coordinator) && !plain.isVolumeDisabled(for: kitchen.coordinator), "fixed output grays out volume with no settings")
         let favorites = try await backend.favoriteNames()
-        check(favorites == ["WWNO", "FIP", "Radio Woodstock 100.1"], "favorites browsed: \(favorites)")
+        check(favorites == ["WWNO", "FIP", "Radio Woodstock 100.1", "Dinner Jazz"], "favorites browsed: \(favorites)")
         let dead = DirectBackend(speakers: ["x": "127.0.0.1:9"])
         do { _ = try await dead.topology(); check(false, "no reachable speaker must throw") } catch { check(true, "no reachable speaker throws") }
     } catch { check(false, "unexpected error \(error)") }

@@ -24,6 +24,7 @@ public struct DirectBackend: SonosBackend {
     public enum DirectError: Error {
         case noSpeakerAnswered
         case roomNotFound(String)
+        case favoriteNotFound(String)
     }
 
     /// Known speaker addresses ("192.168.1.20:1400") by player ID. Any one that answers is enough.
@@ -144,7 +145,8 @@ public struct DirectBackend: SonosBackend {
         return Track(stationName: name, uri: uri, type: type)
     }
 
-    public func favoriteNames() async throws -> [String] {
+    /// The household's Sonos favorites, with what's needed to play each one.
+    public func favorites() async throws -> [SonosSOAP.Favorite] {
         let topology = try await topology()
         guard let host = topology.groups.flatMap(\.members).first(where: \.isRoom)?.host else {
             throw DirectError.noSpeakerAnswered
@@ -152,12 +154,16 @@ public struct DirectBackend: SonosBackend {
         let response = try await SonosSOAP.call(host, SonosSOAP.contentDirectory, "Browse", [
             ("ObjectID", "FV:2"),
             ("BrowseFlag", "BrowseDirectChildren"),
-            ("Filter", "dc:title"),
+            ("Filter", "*"),
             ("StartingIndex", "0"),
             ("RequestedCount", "200"),
             ("SortCriteria", ""),
         ])
-        return SonosSOAP.didlTitles(response["Result"] ?? "")
+        return SonosSOAP.parseFavorites(response["Result"] ?? "")
+    }
+
+    public func favoriteNames() async throws -> [String] {
+        try await favorites().map(\.title)
     }
 
     // MARK: - Commands
@@ -184,11 +190,26 @@ public struct DirectBackend: SonosBackend {
     private static let instance = ("InstanceID", "0")
     private static let master = ("Channel", "Master")
 
+    /// Plays the group. A stopped stream (live radio after a pause) is first reloaded with the URI
+    /// and metadata the speaker still holds, since Play alone may not restart it. This works for any
+    /// station, preset or not.
     @discardableResult public func play(coordinator: String) async -> Bool {
         await attempt {
             let target = try await locate(coordinator).coordinator
+            let transport = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "GetTransportInfo", [Self.instance])
+            if transport["CurrentTransportState"] == "STOPPED" {
+                let media = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "GetMediaInfo", [Self.instance])
+                if let uri = media["CurrentURI"], !uri.isEmpty, !uri.hasPrefix("x-rincon:"), !uri.hasPrefix("x-rincon-queue:") {
+                    try await setTransport(target.host, uri: uri, metadata: media["CurrentURIMetaData"] ?? "")
+                }
+            }
             _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "Play", [Self.instance, ("Speed", "1")])
         }
+    }
+
+    private func setTransport(_ host: String, uri: String, metadata: String) async throws {
+        _ = try await SonosSOAP.call(host, SonosSOAP.avTransport, "SetAVTransportURI",
+                                     [Self.instance, ("CurrentURI", uri), ("CurrentURIMetaData", metadata)])
     }
 
     @discardableResult public func pause(coordinator: String) async -> Bool {
@@ -250,6 +271,37 @@ public struct DirectBackend: SonosBackend {
         }
     }
 
-    // Presets are direct-control phase 3: favorites need their metadata, and streams need DIDL.
-    @discardableResult public func loadPreset(_ station: Station, coordinator: String) async -> Bool { false }
+    /// Loads a preset into the group without starting it:
+    /// - a Sonos favorite with the URI and metadata the speakers store for it (playlists and albums
+    ///   replace the queue);
+    /// - a line-in by its `x-rincon-stream:` URI;
+    /// - a CSV or manual stream as `x-rincon-mp3radio://`, with metadata naming it, so the speaker
+    ///   reports the preset's name as the source.
+    @discardableResult public func loadPreset(_ station: Station, coordinator: String) async -> Bool {
+        await attempt {
+            let target = try await locate(coordinator).coordinator
+            if station.isFavorite {
+                let favorites = try await favorites()
+                guard let favorite = favorites.first(where: { $0.title == station.url })
+                        ?? favorites.first(where: { $0.title.caseInsensitiveCompare(station.url) == .orderedSame }) else {
+                    throw DirectError.favoriteNotFound(station.url)
+                }
+                if favorite.isContainer {
+                    _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "RemoveAllTracksFromQueue", [Self.instance])
+                    _ = try await SonosSOAP.call(target.host, SonosSOAP.avTransport, "AddURIToQueue", [
+                        Self.instance, ("EnqueuedURI", favorite.uri), ("EnqueuedURIMetaData", favorite.metadata),
+                        ("DesiredFirstTrackNumberEnqueued", "0"), ("EnqueueAsNext", "0"),
+                    ])
+                    try await setTransport(target.host, uri: "x-rincon-queue:\(target.uuid)#0", metadata: "")
+                } else {
+                    try await setTransport(target.host, uri: favorite.uri, metadata: favorite.metadata)
+                }
+            } else if station.isLineIn {
+                try await setTransport(target.host, uri: station.url, metadata: "")
+            } else {
+                let uri = station.url.lowercased().hasPrefix("x-") ? station.url : "x-rincon-mp3radio://\(station.url)"
+                try await setTransport(target.host, uri: uri, metadata: SonosSOAP.streamMetadata(title: station.name))
+            }
+        }
+    }
 }
